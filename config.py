@@ -17,7 +17,7 @@ CHECKPOINT_DIR = PROJECT_ROOT / 'checkpoints'
 OUTPUT_DIR = PROJECT_ROOT / 'outputs'
 
 # -- Dataset and Dataloader Configuration ------------------------------------
-SUBSET_JSON = DATA_ROOT / 'original_data/metadata/test.json' # Train/val/test splits
+SUBSET_JSON = DATA_ROOT / 'original_data/metadata/subset2episode.json' # Train/val/test splits
 VTT_DIR = DATA_ROOT / 'original_data/subtitles/audio-aligned'  # Directory with .vtt files
 
 FPS = 12.5 # Downsampled FPS from original 25fps
