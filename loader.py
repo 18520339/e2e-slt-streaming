@@ -98,7 +98,7 @@ class DVCDataset(Dataset):
         if self.split == 'train': # idx is video index; sample random window
             video_id = self.video_ids[idx]
             max_start_frame = self.video_metadata[video_id]['total_frames'] - self.window_size_frames
-            
+
             for try_num in range(self.max_tries):
                 if max_start_frame <= 0: # Video is shorter than window, so we take the whole thing and will pad later
                     window_start_frame = 0
@@ -109,7 +109,7 @@ class DVCDataset(Dataset):
                 
                 window = self._get_window_data(video_id, window_start_frame, window_end_frame)
                 if len(window[-1]) >= self.min_sentences: # Check events
-                    # print(f'Sampled valid window for {video_id} (try {try_num+1})')
+                    print(f'Sampled valid window for {video_id} (try {try_num+1})')
                     return window
                 
             print(f'Warning: Could not find window with >= {self.min_sentences} sentences for {video_id} after {self.max_tries} tries')
@@ -176,20 +176,22 @@ class DVCDataset(Dataset):
         # segment_shapes = []
         pose_segments = []
         
-        for seg_path in self.video_metadata[video_id][segment_paths]:
-            # seg = np.load(seg_path, mmap_mode='r')
+        for seg_path in self.video_metadata[video_id]['segment_paths']:
+            seg = np.load(seg_path, mmap_mode='r')
             # segment_shapes.append(seg.shape[0])
-            seg = np.load(seg_path)
+            # seg = np.load(seg_path)
             pose_segments.append(seg)
         full_poses = np.concatenate(pose_segments, axis=0)
         
         # Concatenate using memmap views
         # offset = 0
         # full_poses = np.empty((self.video_metadata[video_id][total_frames], 133, 3), dtype=np.float32)
-        # for i, seg_path in enumerate(self.video_metadata[video_id][segment_paths]):
+        # for i, seg_path in enumerate(self.video_metadata[video_id]['segment_paths']):
         #     seg = np.load(seg_path, mmap_mode='r')
         #     full_poses[offset:offset + segment_shapes[i]] = seg
         #     offset += segment_shapes[i]
+        
+        print(f'Loaded poses for {video_id}: {full_poses.shape} from {len(pose_segments)} segments')
         return full_poses
 
 
@@ -208,7 +210,7 @@ class DVCDataset(Dataset):
         for i in range(start_file_idx, end_file_idx + 1):
             local_start = max(0, window_start_frame - cumulative_frames[i])
             local_end = min(self.video_metadata[video_id]['frame_counts'][i], window_end_frame - cumulative_frames[i])
-            seg = np.load(self.video_metadata[video_id]['segment_paths'][i])
+            seg = np.load(self.video_metadata[video_id]['segment_paths'][i], mmap_mode='r')
             pose_segments.append(seg[local_start:local_end])
         return np.concatenate(pose_segments, axis=0)
         
@@ -234,8 +236,6 @@ def get_loader(split='train', stride_ratio=0.5, max_tries=10, min_sentences=1, s
 
 if __name__ == '__main__':
     train_loader = get_loader('train', batch_size=32)
-    print(f'Train loader: {len(train_loader.dataset)} samples')
-
     for video_ids, start_frames, end_frames, poses, batch_events in train_loader:
         print('Batch poses shape: ', poses.shape)
         for video_id, start_frame, end_frame, events in zip(video_ids, start_frames, end_frames, batch_events):
