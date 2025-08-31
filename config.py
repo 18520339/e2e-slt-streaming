@@ -16,10 +16,6 @@ POSE_ROOT = DATA_ROOT / 'bobsl_dwpose'  # Directory with pose .npy files
 CHECKPOINT_DIR = PROJECT_ROOT / 'checkpoints'
 OUTPUT_DIR = PROJECT_ROOT / 'outputs'
 
-# Ensure directories exist
-CHECKPOINT_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
-
 # -- Dataset and Dataloader Configuration ------------------------------------
 SUBSET_JSON = DATA_ROOT / 'original_data/metadata/test.json' # Train/val/test splits
 VTT_DIR = DATA_ROOT / 'original_data/subtitles/audio-aligned'  # Directory with .vtt files
