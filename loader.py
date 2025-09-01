@@ -73,7 +73,7 @@ class DVCDataset(Dataset):
                 'subtitles': parse_vtt(VTT_DIR / f'{video_id}.vtt')
             }
             
-            if self.split != 'train': # For val/test: count fixed, non-overlapping windows
+            if self.split != 'train': # For val/test: count fixed, overlapping windows
                 for window_start_frame in range(0, total_frames, self.stride):
                     window_end_frame = window_start_frame + self.window_size_frames
                     if window_end_frame <= total_frames: # Ignore the last, smaller window if it's too short

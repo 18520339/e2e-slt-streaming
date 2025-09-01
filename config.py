@@ -17,20 +17,14 @@ CHECKPOINT_DIR = PROJECT_ROOT / 'checkpoints'
 OUTPUT_DIR = PROJECT_ROOT / 'outputs'
 
 # -- Dataset and Dataloader Configuration ------------------------------------
-SUBSET_JSON = DATA_ROOT / 'original_data/metadata/subset2episode.json' # Train/val/test splits
-VTT_DIR = DATA_ROOT / 'original_data/subtitles/audio-aligned'  # Directory with .vtt files
-
-FPS = 12.5 # Downsampled FPS from original 25fps
+SUBSET_JSON = DATA_ROOT / 'original_data/metadata/test.json' # subset2episode.json for Train/val/test splits
+VTT_DIR = DATA_ROOT / 'automatic_annotations/signing_aligned_subtitles/auto_sat_aligned'  # Directory with .vtt files
 WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `stats.ipynb`
 MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
 MAX_SUB_DURATION = 20.0 # From LiTFiC, seconds
 POSE_DIMENSIONS = 2 # 2D coordinates (x, y)
 POSE_SHAPE = (133, 3) # Keypoints x (x, y, confidence)
-
-# Dataloader settings
-BATCH_SIZE = 8
-EVAL_BATCH_SIZE = 16
-NUM_WORKERS = 4 # Number of CPU cores for data loading
+FPS = 12.5 # Downsampled FPS from original 25fps
 
 # -- Pose Preprocessing (CoSign Inspired) -----------------------------------
 # Define keypoint groups based on COCO-WholeBody (133 points: body 0-22, face 23-90, left hand 91-111, right hand 112-132)

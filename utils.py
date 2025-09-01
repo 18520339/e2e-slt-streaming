@@ -22,7 +22,7 @@ def get_video_info(video_path: str):
 def parse_vtt(vtt_path) -> List[Dict[str, Union[float, str]]]:
     '''
     Parse VTT file to extract subtitles with start/end times (in seconds) and text.
-    Filters 1-20s as per LiTFiC and skips non-subtitle entries (e.g., '[Music]').
+    Filters out non-subtitle entries (e.g., '[Music]').
     Returns list of dicts: {'start': float, 'end': float, 'text': str, 'duration': float}
     '''
     if not os.path.exists(vtt_path):
