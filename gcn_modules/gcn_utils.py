@@ -29,8 +29,9 @@ class Graph:
     def __str__(self):
         return self.A
 
+
     def get_edge(self, layout):
-        if layout == 'hand':
+        if layout in ['left_hand', 'right_hand']:
             self.num_node = 21
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_link = [
@@ -59,7 +60,7 @@ class Graph:
             neighbor_link = [[i, i + 1] for i in range(self.num_node - 1)] + \
                             [[self.num_node - 1, 0]]
             self.edge = self_link + neighbor_link
-            self.center = 2
+            self.center = 4
             
         elif layout == 'face':
             self.num_node = 18
@@ -67,7 +68,7 @@ class Graph:
             neighbor_link = [[i, i + 1] for i in range(16)] + \
                             [[17, i] for i in range(17)]
             self.edge = self_link + neighbor_link
-            self.center = 8
+            self.center = self.num_node - 1
             
 
     def get_adjacency(self, strategy):

@@ -19,11 +19,9 @@ OUTPUT_DIR = PROJECT_ROOT / 'outputs'
 # -- Dataset and Dataloader Configuration ------------------------------------
 SUBSET_JSON = DATA_ROOT / 'original_data/metadata/test.json' # subset2episode.json for Train/val/test splits
 VTT_DIR = DATA_ROOT / 'automatic_annotations/signing_aligned_subtitles/auto_sat_aligned'  # Directory with .vtt files
-WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `stats.ipynb`
 MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
 MAX_SUB_DURATION = 20.0 # From LiTFiC, seconds
-POSE_DIMENSIONS = 2 # 2D coordinates (x, y)
-POSE_SHAPE = (133, 3) # Keypoints x (x, y, confidence)
+WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `stats.ipynb`
 FPS = 12.5 # Downsampled FPS from original 25fps
 
 # -- Pose Preprocessing (CoSign Inspired) -----------------------------------
@@ -39,6 +37,13 @@ FACE_IDS = list(range(23, 40)) + [53]  # First 18 as cheek/lower approx
 ALL_SELECTED_IDS = BODY_IDS + LEFT_HAND_IDS + RIGHT_HAND_IDS + MOUTH_IDS + FACE_IDS  # Total 9+21+21+8+18=77
 CONF_THRESHOLD = 0.5  # From supp: Keypoints with conf > 0.5 considered valid
 NUM_KEYPOINTS = len(ALL_SELECTED_IDS)
+KPS_MODULES = {
+    'body': {'kps_ids': BODY_IDS, 'kps_rel_range': (0, 9)},
+    'left_hand': {'kps_ids': LEFT_HAND_IDS, 'kps_rel_range': (9, 30)},
+    'right_hand': {'kps_ids': RIGHT_HAND_IDS, 'kps_rel_range': (30, 51)},
+    'mouth': {'kps_ids': MOUTH_IDS, 'kps_rel_range': (51, 59)},
+    'face': {'kps_ids': FACE_IDS, 'kps_rel_range': (59, 77)},
+}
 
 # -- PDVC Baseline Model Architecture ----------------------------------------
 # Pose Encoder (ST-GCN)

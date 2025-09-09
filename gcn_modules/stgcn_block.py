@@ -78,7 +78,7 @@ class STGCNChain(nn.Sequential):
                 
 
 def get_stgcn_chain(in_dim, level, kernel_size, A, adaptive):
-    if level == 'spatial': block_args = [[64,1], [128,1], [256,1]]
-    elif level == 'temporal': block_args = [[256,3]]
+    if level == 'spatial': block_args = [[64, 1], [128, 1], [256, 1]]
+    elif level == 'temporal': block_args = [[256, 3]]
     else: raise NotImplementedError
     return STGCNChain(in_dim, block_args, kernel_size, A, adaptive), block_args[-1][0]
