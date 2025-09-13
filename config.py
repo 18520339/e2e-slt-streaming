@@ -19,10 +19,11 @@ OUTPUT_DIR = PROJECT_ROOT / 'outputs'
 # -- Dataset and Dataloader Configuration ------------------------------------
 SUBSET_JSON = DATA_ROOT / 'original_data/metadata/test.json' # subset2episode.json for Train/val/test splits
 VTT_DIR = DATA_ROOT / 'automatic_annotations/signing_aligned_subtitles/auto_sat_aligned'  # Directory with .vtt files
+FPS = 12.5 # Downsampled FPS from original 25fps
 MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
 MAX_SUB_DURATION = 20.0 # From LiTFiC, seconds
 WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `stats.ipynb`
-FPS = 12.5 # Downsampled FPS from original 25fps
+WINDOW_SIZE_FRAMES = int(WINDOW_DURATION_SECONDS * FPS)  # Number of frames per window
 
 # -- Pose Preprocessing (CoSign Inspired) -----------------------------------
 # Define keypoint groups based on COCO-WholeBody (133 points: body 0-22, face 23-90, left hand 91-111, right hand 112-132)
@@ -46,23 +47,27 @@ KPS_MODULES = {
 }
 
 # -- PDVC Baseline Model Architecture ----------------------------------------
-# Pose Encoder (ST-GCN)
 STGCN_CHANNELS = [3, 64, 64, 128, 128, 256, 256] # Input channels, then block channels
 
-# Transformer
-D_MODEL = 256 # Must match the last channel dim of the pose encoder
-NHEAD = 8
-NUM_ENCODER_LAYERS = 3
-NUM_DECODER_LAYERS = 3
-DIM_FEEDFORWARD = 1024
-DROPOUT = 0.1
+class PDVCConfig:
+    d_model = 256  # Feature dim (Must match the last channel dim of ST-GCN)
+    num_encoder_layers = 6
+    num_decoder_layers = 6
+    num_queries = 20  # Max events per window (N_set)
+    num_feature_levels = 4  # Multi-scale levels L
+    dim_feedforward = 1024
+    dropout = 0.1
+    num_heads = 8
+    num_ref_points = 4  # Sampling points K per level/head
+    vocab_size = 10000  # Placeholder; will build from data
+    max_caption_len = 30  # Max words per caption
 
 # Vocabulary settings (placeholders for now)
 VOCAB_SIZE = 10000
 PAD_IDX = 0
 
 # -- Training Configuration --------------------------------------------------
-# DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 LEARNING_RATE = 1e-4
 NUM_EPOCHS = 50
 CLIP_GRAD_NORM = 1.0 # Gradient clipping to prevent exploding gradients
