@@ -1,223 +1,180 @@
+import math
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from typing import Union, Any, Dict, List, Optional, Tuple
+
+from copy import deepcopy
+from typing import Union, Dict, List, Optional
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
-    DeformableDetrConvModel,
-    DeformableDetrEncoder,
-    DeformableDetrDecoder,
-    DeformableDetrPreTrainedModel,
     DeformableDetrMLPPredictionHead,
     DeformableDetrObjectDetectionOutput,
-    BaseModelOutput,
-    build_position_encoding,
-    inverse_sigmoid,
+    inverse_sigmoid
 )
+from deformable_detr import TemporalDeformableDetrModel
+from loss import TemporalDeformableDetrForObjectDetectionLoss
+from utils import ensure_cw_format
 
-class TemporalDeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D features)
+
+class TemporalDeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
+    ''' Temporal Deformable DETR for 1D event localization.
+    
+    Temporal detection head on top of TemporalDeformableDetrModel.
+    - class head: (d_model -> num_classes) with last class 'no-object'
+    - bbox head: (d_model -> 2) predicts (center, length) normalized to [0,1]
+    We do NOT use iterative box refinement (with_box_refine=False) to keep length independent of reference.
+    
+    Inputs:
+    - pixel_values: (B, C, T)
+    - pixel_mask:   (B, T) where 1=valid, 0=pad
+    - labels: list of dicts per batch item with {
+        'class_labels': LongTensor (N_i, )  foreground classes (no "no-object" here)
+        'boxes': FloatTensor (N_i, 2)       (center, width) normalized to [0,1]
+    }
     '''
-    A temporal variant of DeformableDetrModel:
-    - Expects pixel_values_1d: (B, C, T), pixel_mask_1d: (B, T)
-    - Builds multi-scale features as (B, C, 1, T_l)
-    - Keeps the same encoder/decoder, spatial_shapes, valid_ratios logic (with height=1)
-    '''
-    def __init__(self, config: DeformableDetrConfig, temporal_channels: Optional[List[int]] = None):
+    _tied_weights_keys = [r"bbox_embed\.[1-9]\d*", r"class_embed\.[1-9]\d*"] # When using clones, all layers > 0 will be clones, but layer 0 *is* required
+    _no_split_modules = None # We can't initialize the model on meta device as some weights are modified during the initialization
+    
+    def __init__(self, config: DeformableDetrConfig, captioner, temporal_channels: Optional[List[int]] = None):
         super().__init__(config)
-        if temporal_channels is None:
-            temporal_channels = [config.d_model * 2 ** l for l in range(config.num_feature_levels)]
-
-        # Temporal backbone + positional encoding
-        backbone = TemporalConvEncoder(
-            in_channels=config.num_channels,
-            channels=temporal_channels,
-            strides=[2] * len(temporal_channels),
-            kernel_sizes=[5] + [3] * (len(temporal_channels) - 1),
-            norm=True,
-        )
-        position_embeddings = build_position_encoding(config)
-        self.backbone = DeformableDetrConvModel(backbone, position_embeddings)
-
-        # Input projection: map each backbone level to d_model with 1x1 Conv2d
-        if config.num_feature_levels > 1:
-            num_backbone_outs = len(backbone.intermediate_channel_sizes)
-            input_proj_list = []
-            for lvl in range(num_backbone_outs):
-                in_channels = backbone.intermediate_channel_sizes[lvl]
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, config.d_model, kernel_size=1), 
-                    nn.GroupNorm(32, config.d_model)
-                ))
-            for _ in range(config.num_feature_levels - num_backbone_outs): # Extra levels from last backbone level
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv2d(in_channels, config.d_model, kernel_size=3, stride=2, padding=1),
-                    nn.GroupNorm(32, config.d_model),
-                ))
-                in_channels = config.d_model
-            self.input_proj = nn.ModuleList(input_proj_list)
-        else:
-            self.input_proj = nn.ModuleList([nn.Sequential(
-                nn.Conv2d(backbone.intermediate_channel_sizes[-1], config.d_model, kernel_size=1),
-                nn.GroupNorm(32, config.d_model),
-            )])
-
-        for proj in self.input_proj:
-            nn.init.xavier_uniform_(proj[0].weight, gain=1)
-            nn.init.constant_(proj[0].bias, 0)
-
-        self.encoder = DeformableDetrEncoder(config)
-        self.decoder = DeformableDetrDecoder(config)
-        self.level_embed = nn.Parameter(Tensor(config.num_feature_levels, config.d_model)) # For multi-scale features
-        self.query_position_embeddings = nn.Embedding(config.num_queries, config.d_model * 2)
-        self.reference_points = nn.Linear(config.d_model, 2) # Predict (center, width) in [0,1] for each query via sigmoid
-        self.post_init()
+        self.model = TemporalDeformableDetrModel(config, temporal_channels=temporal_channels) # Deformable DETR encoder-decoder model
         
+        # Detection heads on top: class + 2D temporal box (center, width)
+        self.count_embed = nn.Linear(config.d_model, self.config.num_queries + 1)  # Predict count of events in [0, num_queries]; last index for 0 events
+        self.class_embed = nn.Linear(config.d_model, config.num_labels)  # num_labels should include background
+        self.bbox_embed = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
+        self.captioner = captioner
+        
+        bias_value = -math.log((1 - 0.01) / 0.01)
+        self.class_embed.bias.data = torch.ones(config.num_labels) * bias_value
+        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
+        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+
+        num_pred = config.decoder_layers  # two_stage False in our temporal model
+        if config.with_box_refine:
+            self.count_embed = nn.ModuleList([deepcopy(self.count_embed) for _ in range(num_pred)])
+            self.class_embed = nn.ModuleList([deepcopy(self.class_embed) for _ in range(num_pred)])
+            self.bbox_embed = nn.ModuleList([deepcopy(self.bbox_embed) for _ in range(num_pred)])
+            self.captioner = nn.ModuleList([deepcopy(self.captioner) for _ in range(num_pred)])
+            self.model.decoder.bbox_embed = self.bbox_embed # Hack implementation for iterative bounding box refinement
+        else:
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[1:], -2)
+            self.count_embed = nn.ModuleList([self.count_embed for _ in range(num_pred)])
+            self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
+            self.captioner = nn.ModuleList([self.captioner for _ in range(num_pred)])
+            self.model.decoder.bbox_embed = None
+            
+        self.loss_function = TemporalDeformableDetrForObjectDetectionLoss
+        self.post_init()
+
 
     def forward(
         self,
-        pixel_values: Tensor,  # (B, C, T)
-        pixel_mask: Optional[Tensor] = None,  # (B, T) 1=valid, 0=pad
-        decoder_attention_mask: Optional[Tensor] = None,
-        encoder_outputs: Optional[Tensor] = None,
-        inputs_embeds: Optional[Tensor] = None,
-        decoder_inputs_embeds: Optional[Tensor] = None,
+        pixel_values: torch.FloatTensor, # (B,C,T)
+        pixel_mask: Optional[torch.LongTensor] = None, # (B,T)
+        decoder_attention_mask: Optional[torch.FloatTensor] = None,
+        encoder_outputs: Optional[torch.FloatTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[list[dict]] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.FloatTensor], DeformableDetrModelOutput]:
-        if output_attentions is None: output_attentions = self.config.output_attentions
-        if output_hidden_states is None: output_hidden_states = self.config.output_hidden_states
-        if return_dict is None: return_dict = self.config.use_return_dict
-        assert pixel_values.dim() == 3, 'Temporal model expects pixel_values of shape (B, C, T)'
-        
-        B, C, T = pixel_values.shape
-        device = pixel_values.device
-        if pixel_mask is None: pixel_mask = torch.ones((B, T), dtype=torch.long, device=device)
+    ) -> Union[tuple[torch.FloatTensor], DeformableDetrObjectDetectionOutput]:
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dic
 
-        # Extract multi-scale feature maps of same resolution `config.d_model` (cf Figure 4 in paper)
-        # First, sent pixel_values + pixel_mask through Backbone to obtain the features
-        # which is a list of tuples (feature_map 2d, mask 2d) for each level
-        features, position_embeddings_list = self.backbone(pixel_values, pixel_mask)  # list of levels
-        
-        # Then, apply 1x1 convolution to reduce the channel dimension to d_model (256 by default)
-        sources, masks = [], [] # Shape: (B, C_l, 1, T_l), (B, 1, T_l)
-        for level, (source, mask) in enumerate(features):
-            sources.append(self.input_proj[level](source))
-            masks.append(mask)
-            if mask is None: raise ValueError('No attention mask was provided')
-
-        # Add extra pyramid levels if the current number of levels in the backbone is less than num_feature_levels
-        # Lowest resolution feature maps are obtained via 3x3 stride 2 convolutions on the final stage
-        if self.config.num_feature_levels > len(sources):
-            _len_sources = len(sources)
-            for level in range(_len_sources, self.config.num_feature_levels):
-                if level == _len_sources: # First extra level from last backbone feature map
-                    source = self.input_proj[level](features[-1][0]) 
-                    base_mask = features[-1][1]  # (B, 1, T_last)
-                else: # Further levels from previous extra level
-                    source = self.input_proj[level](sources[-1])
-                    base_mask = masks[-1]
-                    
-                # Resize mask to new spatial size
-                mask = F.interpolate(base_mask.float(), size=source.shape[-2:]).to(torch.bool)
-                pos_l = self.backbone.position_embedding(source, mask).to(source.dtype)
-                sources.append(source)
-                masks.append(mask)
-                position_embeddings_list.append(pos_l)
-
-        # Prepare encoder inputs (by flattening)
-        source_flatten, mask_flatten, lvl_pos_embed_flatten = [], [], []
-        spatial_shapes_list: List[Tuple[int, int]] = []
-        for level, (source, mask, pos_embed) in enumerate(zip(sources, masks, position_embeddings_list)):
-            batch_size, _, height, width = source.shape  # H==1
-            spatial_shapes_list.append((height, width))
-            
-            source = source.flatten(2).transpose(1, 2)        # (B, H*W, C) = (B, W, C)
-            mask = mask.flatten(1)                            # (B, H*W)    = (B, W)
-            pos_embed = pos_embed.flatten(2).transpose(1, 2)  # (B, H*W, C) = (B, W, C)
-            lvl_pos_embed = pos_embed + self.level_embed[level].view(1, 1, -1)
-            
-            source_flatten.append(source)
-            mask_flatten.append(mask)
-            lvl_pos_embed_flatten.append(lvl_pos_embed)
-            
-        source_flatten = torch.cat(source_flatten, 1)               # (B, sum(W_l), C)
-        mask_flatten = torch.cat(mask_flatten, 1)                   # (B, sum(W_l))
-        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1) # (B, sum(W_l), C)
-
-        spatial_shapes = torch.as_tensor(spatial_shapes_list, dtype=torch.long, device=source_flatten.device) # (L, 2)
-        level_start_index = torch.cat((spatial_shapes.new_zeros((1,)), spatial_shapes.prod(1).cumsum(0)[:-1])) # (L,)
-        valid_ratios = torch.stack([self.get_valid_ratio(m, dtype=source_flatten.dtype) for m in masks], 1) # (B, L, 2)
-
-        # Send source_flatten + mask_flatten + lvl_pos_embed_flatten (backbone + proj layer output) through encoder
-        # Also provide spatial_shapes, level_start_index and valid_ratios
-        if encoder_outputs is None:
-            encoder_outputs = self.encoder(
-                inputs_embeds=source_flatten,
-                attention_mask=mask_flatten,
-                position_embeddings=lvl_pos_embed_flatten,
-                spatial_shapes=spatial_shapes,
-                spatial_shapes_list=spatial_shapes_list,
-                level_start_index=level_start_index,
-                valid_ratios=valid_ratios,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
-        # If the user passed a tuple for encoder_outputs, we wrap it in a BaseModelOutput when return_dict=True
-        elif return_dict and not isinstance(encoder_outputs, BaseModelOutput):
-            encoder_outputs = BaseModelOutput(
-                last_hidden_state=encoder_outputs[0],
-                hidden_states=encoder_outputs[1] if len(encoder_outputs) > 1 else None,
-                attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
-            )
-
-        # Prepare decoder inputs (query embeddings and reference points)
-        batch_size, _, num_channels = encoder_outputs[0].shape
-        enc_outputs_class = None
-        enc_outputs_coord_logits = None
-
-        if self.config.two_stage:
-            # two-stage is not recommended for temporal variant; left unimplemented for brevity
-            raise NotImplementedError('two_stage=True is not supported in the temporal variant')
-        else:
-            query_embed, target = torch.split(self.query_position_embeddings.weight, num_channels, dim=1)
-            query_embed = query_embed.unsqueeze(0).expand(batch_size, -1, -1)  # (B, Q, C)
-            target = target.unsqueeze(0).expand(batch_size, -1, -1)            # (B, Q, C)
-            reference_points = self.reference_points(query_embed).sigmoid()    # (B, Q, 2)
-            init_reference_points = reference_points
-
-        decoder_outputs = self.decoder(
-            inputs_embeds=target,
-            position_embeddings=query_embed,
-            encoder_hidden_states=encoder_outputs[0],
-            encoder_attention_mask=mask_flatten,
-            reference_points=reference_points,
-            spatial_shapes=spatial_shapes,
-            spatial_shapes_list=spatial_shapes_list,
-            level_start_index=level_start_index,
-            valid_ratios=valid_ratios,
+        # First, sent images through DETR base model to obtain encoder + decoder outputs
+        outputs = self.model(
+            pixel_values,
+            pixel_mask=pixel_mask,
+            decoder_attention_mask=decoder_attention_mask,
+            encoder_outputs=encoder_outputs,
+            inputs_embeds=inputs_embeds,
+            decoder_inputs_embeds=decoder_inputs_embeds,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
 
-        if not return_dict:
-            enc_outputs = tuple(value for value in [enc_outputs_class, enc_outputs_coord_logits] if value is not None)
-            tuple_outputs = (init_reference_points,) + decoder_outputs + encoder_outputs + enc_outputs
-            return tuple_outputs
+        # Decoder intermediate states: shape (B, L, Q, D) -> we need per-layer lists
+        hidden_states = outputs.intermediate_hidden_states if return_dict else outputs[2]        # (B, L, Q, D)
+        init_reference = outputs.init_reference_points if return_dict else outputs[0]            # (B, Q, 2)
+        inter_references = outputs.intermediate_reference_points if return_dict else outputs[3]  # (B, L, Q, 2)
 
-        return DeformableDetrModelOutput(
-            init_reference_points=init_reference_points,
-            last_hidden_state=decoder_outputs.last_hidden_state,
-            intermediate_hidden_states=decoder_outputs.intermediate_hidden_states,
-            intermediate_reference_points=decoder_outputs.intermediate_reference_points,
-            decoder_hidden_states=decoder_outputs.hidden_states,
-            decoder_attentions=decoder_outputs.attentions,
-            cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
-            enc_outputs_class=enc_outputs_class,
-            enc_outputs_coord_logits=enc_outputs_coord_logits,
+        # We only refine the center (dim 0) using decoder reference; length is predicted as-is and sigmoided
+        outputs_counts, outputs_classes, outputs_coords = [], [], []
+        outputs_captions_probs, outputs_captions_seq = [], []
+        
+        for level in range(hidden_states.shape[1]):
+            # Count head: (B, num_queries, num_queries+1) logits for 0 to num_queries events
+            outputs_count = self.count_embed[level](
+                # Max is to get the most confident prediction across queries
+                torch.max(hidden_states[:, level], dim=1, keepdim=False).values
+            )
+            outputs_counts.append(outputs_count)
+            
+            # Class head: (B, num_queries, num_classes) logits
+            outputs_class = self.class_embed[level](hidden_states[:, level])  # (B, Q, C)
+            outputs_classes.append(outputs_class)
+            
+            # Box head: (B, num_queries, 2) (center, width) in [0,1]
+            reference = init_reference if level == 0 else inter_references[:, level - 1] # (B, Q, 2) if level != 0, we 
+            reference = inverse_sigmoid(reference)                                       # (B, Q, 2)
+            delta_bbox = self.bbox_embed[level](hidden_states[:, level])                 # (B, Q, 2)
+            delta_bbox[..., :2] += reference  # Consistent with HF logic for 2D references
+            # delta_bbox[..., 0] += reference[..., 0] # Refine only the center. Leave length independent of reference
+            outputs_coords.append(delta_bbox.sigmoid()) # (B, Q, 2) in (center,width) normalized [0,1]
+
+            # Caption head: (B, num_queries, max_len, vocab_size) logits
+            if level != hidden_states.shape[1] - 1: # No captioning at the last layer
+                cap_probs, seq = self.captioner[level](
+                    hidden_states[:, level], labels, reference, others, 
+                    'teacher_forcing' if self.training else 'greedy'
+                ) # (B, Q, max_len, vocab_size), (B, Q, max_len)
+                outputs_captions_probs.append(cap_probs)
+                outputs_captions_seq.append(seq)
+
+        outputs_counts = torch.stack(outputs_counts)  # (L, B, Q, num_queries+1)
+        outputs_class = torch.stack(outputs_classes)  # (L, B, Q, C)
+        outputs_coord = torch.stack(outputs_coords)   # (L, B, Q, 2)
+        logits = outputs_class[-1]                    # (B, Q, C)
+        pred_boxes = outputs_coord[-1]                # (B, Q, 2) (center,width) normalized
+        pred_counts = outputs_counts[-1]              # (B, Q, num_queries+1)
+
+        loss, loss_dict, auxiliary_outputs = None, None, None
+        if labels is not None: # Training mode
+            fixed_targets: List[Dict[str, Tensor]] = [ 
+                # Ensure targets provide (center,width). If start/end (s<e & min>=0) provided, convert here
+                {'class_labels': t['class_labels'], 'boxes': ensure_cw_format(t['boxes'])}
+                for t in labels
+            ]
+            loss, loss_dict, auxiliary_outputs = self.loss_function(
+                logits, labels, self.device, pred_boxes, pred_counts,
+                self.config, outputs_class, outputs_coord,
+            )
+
+        if not return_dict:
+            output = (logits, pred_boxes) + outputs
+            if auxiliary_outputs is not None: output += auxiliary_outputs
+            return ((loss, loss_dict) + output) if loss is not None else output
+        
+        return DeformableDetrObjectDetectionOutput(
+            loss=loss,
+            loss_dict=loss_dict,
+            logits=logits,
+            pred_boxes=pred_boxes,
+            auxiliary_outputs=auxiliary_outputs,
+            last_hidden_state=outputs.last_hidden_state,
+            decoder_hidden_states=outputs.decoder_hidden_states,
+            decoder_attentions=outputs.decoder_attentions,
+            cross_attentions=outputs.cross_attentions,
+            encoder_last_hidden_state=outputs.encoder_last_hidden_state,
+            encoder_hidden_states=outputs.encoder_hidden_states,
+            encoder_attentions=outputs.encoder_attentions,
+            intermediate_hidden_states=outputs.intermediate_hidden_states,
+            intermediate_reference_points=outputs.intermediate_reference_points,
+            init_reference_points=outputs.init_reference_points,
+            enc_outputs_class=outputs.enc_outputs_class,
+            enc_outputs_coord_logits=outputs.enc_outputs_coord_logits,
         )

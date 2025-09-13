@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn, Tensor
 from typing import List, Tuple
 from scipy.optimize import linear_sum_assignment
-from transformers.loss.loss_for_object_detection import sigmoid_focal_loss, ImageLoss, HungarianMatcher
+from transformers.loss.loss_for_object_detection import HungarianMatcher, ImageLoss, _set_aux_loss, sigmoid_focal_loss, 
 from utils import box_iou, generalized_box_iou, cw_to_se
 
 
@@ -136,7 +136,7 @@ class TemporalDeformableDetrImageLoss(ImageLoss):
         }
         
         
-def TemporalDeformableDetrForObjectDetectionLoss(logits, labels, device, pred_boxes, config, outputs_class=None, outputs_coord=None, **kwargs):
+def TemporalDeformableDetrForObjectDetectionLoss(logits, labels, device, pred_boxes, pred_counts, config, outputs_class=None, outputs_coord=None, **kwargs):
     matcher = TemporalHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
     criterion = TemporalDeformableDetrImageLoss(
         matcher=matcher,
@@ -147,16 +147,14 @@ def TemporalDeformableDetrForObjectDetectionLoss(logits, labels, device, pred_bo
     criterion.to(device)
     
     # Compute the losses, based on outputs and labels
-    outputs_loss = {}
-    outputs_loss['logits'] = logits
-    outputs_loss['pred_boxes'] = pred_boxes
+    outputs = {'logits': logits, 'pred_boxes': pred_boxes, 'pred_counts': pred_counts}
     auxiliary_outputs = None
     
     if config.auxiliary_loss:
         auxiliary_outputs = _set_aux_loss(outputs_class, outputs_coord)
-        outputs_loss['auxiliary_outputs'] = auxiliary_outputs
-    loss_dict = criterion(outputs_loss, labels)
-    
+        outputs['auxiliary_outputs'] = auxiliary_outputs
+    loss_dict = criterion(outputs, labels)
+
     # Compute total loss, as a weighted sum of the various losses
     weight_dict = {'loss_ce': 1, 'loss_bbox': config.bbox_loss_coefficient}
     weight_dict['loss_giou'] = config.giou_loss_coefficient
