@@ -1,5 +1,6 @@
 import os
 import cv2
+import torch
 from typing import List, Dict, Union
 from config import *
 
@@ -78,3 +79,49 @@ def time_to_seconds(time_str): # Convert HH:MM:SS.mmm to seconds float
         minutes, seconds = parts
         return int(minutes) * 60 + float(seconds)
     return float(time_str)
+
+
+def cw_to_se(cw: torch.Tensor) -> torch.Tensor:
+    '''
+    Convert (center, length) to (start, end). Inputs are normalized to [0, 1].
+    cw: (N, 2) or (..., 2)
+    Returns: (..., 2) as (start, end)
+    '''
+    c = cw[..., 0]
+    w = torch.clamp(cw[..., 1], min=1e-6)
+    box = [c - 0.5 * w, c + 0.5 * w]
+    return torch.stack(box, dim=-1)
+
+
+def se_to_cw(se: torch.Tensor) -> torch.Tensor:
+    '''
+    Convert (start, end) in [0,1] to (center, width).
+    se: (N, 2) or (..., 2)
+    Returns: (..., 2) as (center, length)
+    '''
+    s = se[..., 0]
+    e = se[..., 1]
+    box = [0.5 * (s + e), torch.clamp(e - s, min=1e-6)]
+    return torch.stack(box, dim=-1)
+
+
+def box_iou(pred_se: Tensor, target_se: Tensor) -> Tensor:
+    area1 = pred_se[:, 1] - pred_se[:, 0]
+    area2 = target_se[:, 1] - target_se[:, 0]
+    left_top = torch.max(pred_se[:, None, 0], target_se[:, 0])
+    right_bottom = torch.min(pred_se[:, None, 1], target_se[:, 1]) 
+    inter = (right_bottom - left_top).clamp(min=0) 
+    union = area1[:, None] + area2 - inter
+    iou = torch.where(union > 0, inter / union, torch.zeros_like(union))
+    return iou, union
+
+
+def generalized_box_iou(pred_se, target_se):
+    # Degenerate boxes gives inf / nan results, so do an early check
+    assert (pred_se[:, 1:] >= pred_se[:, :1]).all()
+    assert (target_se[:, 1:] >= target_se[:, :1]).all()
+    iou, union = box_iou(pred_se, target_se)
+    top_left = torch.min(pred_se[:, None, 0], target_se[:, 0])
+    right_bottom = torch.max(pred_se[:, None, 1], target_se[:, 1])
+    area = (right_bottom - top_left).clamp(min=0)
+    return torch.where(area > 0, iou - (area - union) / area, torch.zeros_like(area))
