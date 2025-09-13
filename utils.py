@@ -105,6 +105,19 @@ def se_to_cw(se: torch.Tensor) -> torch.Tensor:
     return torch.stack(box, dim=-1)
 
 
+def ensure_cw_format(boxes: torch.Tensor) -> torch.Tensor:
+    '''
+    Ensure boxes are in (center, width) format. If input is (start, end), convert it.
+    boxes: (N, 2) or (..., 2)
+    Returns: (..., 2) as (center, width)
+    '''
+    if boxes.shape[-1] != 2: raise ValueError('Boxes must have shape (N, 2)')
+    s, e = boxes[:, 0], boxes[:, 1]
+    if (s <= e).all() and boxes.min() >= 0.0 and boxes.max() <= 1.0:
+        return se_to_cw(boxes)
+    return boxes
+
+
 def box_iou(pred_se: Tensor, target_se: Tensor) -> Tensor:
     area1 = pred_se[:, 1] - pred_se[:, 0]
     area2 = target_se[:, 1] - target_se[:, 0]
