@@ -12,22 +12,6 @@ from decoder import DeformableDetrDecoder
 
 
 class DeformableDetrModelOutput(ModelOutput):
-    '''
-    init_reference_points (`FloatTensor` of shape  `(batch_size, num_queries, 4)`):
-        Initial reference points sent through the Transformer decoder.
-    last_hidden_state (`FloatTensor` of shape `(batch_size, num_queries, hidden_size)`):
-        Sequence of hidden-states at the output of the last layer of the decoder of the model.
-    intermediate_hidden_states (`FloatTensor` of shape `(batch_size, config.decoder_layers, num_queries, hidden_size)`):
-        Stacked intermediate hidden states (output of each layer of the decoder).
-    intermediate_reference_points (`FloatTensor` of shape `(batch_size, config.decoder_layers, num_queries, 4)`):
-        Stacked intermediate reference points (reference points of each layer of the decoder).
-    enc_outputs_class (`FloatTensor` of shape `(batch_size, sequence_length, config.num_labels)`, *optional*, returned when `config.with_box_refine=True` and `config.two_stage=True`):
-        Predicted bounding boxes scores where the top `config.two_stage_num_proposals` scoring bounding boxes are
-        picked as region proposals in the first stage. Output of bounding box binary classification (i.e.
-        foreground and background).
-    enc_outputs_coord_logits (`FloatTensor` of shape `(batch_size, sequence_length, 4)`, *optional*, returned when `config.with_box_refine=True` and `config.two_stage=True`):
-        Logits of predicted bounding boxes coordinates in the first stage.
-    '''
     init_reference_points: Optional[FloatTensor] = None
     last_hidden_state: Optional[FloatTensor] = None
     intermediate_hidden_states: Optional[FloatTensor] = None
@@ -40,7 +24,12 @@ class DeformableDetrModelOutput(ModelOutput):
     encoder_attentions: Optional[tuple[FloatTensor]] = None
     enc_outputs_class: Optional[FloatTensor] = None
     enc_outputs_coord_logits: Optional[FloatTensor] = None
-
+    mask_flatten: Optional[FloatTensor] = None
+    temporal_shapes: Optional[FloatTensor] = None
+    level_start_index: Optional[FloatTensor] = None
+    valid_ratios: Optional[FloatTensor] = None
+    self_attn_mask: Optional[FloatTensor] = None
+    
 
 class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D features
     '''
@@ -252,4 +241,9 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             encoder_attentions=encoder_outputs.attentions,
             enc_outputs_class=enc_outputs_class,
             enc_outputs_coord_logits=enc_outputs_coord_logits,
+            mask_flatten=mask_flatten,
+            temporal_shapes=temporal_shapes,
+            level_start_index=level_start_index,
+            valid_ratios=valid_ratios,
+            self_attn_mask=self_attn_mask,
         )
