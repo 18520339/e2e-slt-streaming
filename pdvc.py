@@ -9,6 +9,7 @@ from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
     DeformableDetrMLPPredictionHead,
     DeformableDetrObjectDetectionOutput,
+    DeformableDetrPreTrainedModel,
     inverse_sigmoid
 )
 from deformable_detr import DeformableDetrModel
@@ -32,7 +33,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         'boxes': FloatTensor (N_i, 2)       (center, width) normalized to [0,1]
     }
     '''
-    _tied_weights_keys = [r"bbox_embed\.[1-9]\d*", r"class_embed\.[1-9]\d*"] # When using clones, all layers > 0 will be clones, but layer 0 *is* required
+    _tied_weights_keys = [r"bbox_head\.[1-9]\d*", r"class_head\.[1-9]\d*"] # When using clones, all layers > 0 will be clones, but layer 0 *is* required
     _no_split_modules = None # We can't initialize the model on meta device as some weights are modified during the initialization
     
     def __init__(self, config: DeformableDetrConfig, captioner, temporal_channels: Optional[List[int]] = None):
@@ -40,57 +41,52 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.transformer = DeformableDetrModel(config, temporal_channels=temporal_channels) # Deformable DETR encoder-decoder model
         
         # Detection heads on top: class + 2D temporal box (center, width)
-        self.count_embed = nn.Linear(config.d_model, config.num_queries + 1)  # Predict count of events in [0, num_queries]; last index for 0 events
-        self.class_embed = nn.Linear(config.d_model, config.num_labels)  # num of foreground classes, no 'no-object' here
-        self.bbox_embed = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
-        self.captioner = captioner
+        self.count_head = nn.Linear(config.d_model, config.num_queries + 1)  # Predict count of events in [0, num_queries]; last index for 0 events
+        self.class_head = nn.Linear(config.d_model, config.num_labels)  # num of foreground classes, no 'no-object' here
+        self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
+        self.caption_head = captioner
         
         bias_value = -math.log((1 - 0.01) / 0.01)
-        self.class_embed.bias.data = torch.ones(config.num_labels) * bias_value
-        nn.init.constant_(self.bbox_embed.layers[-1].weight.data, 0)
-        nn.init.constant_(self.bbox_embed.layers[-1].bias.data, 0)
+        self.class_head.bias.data = torch.ones(config.num_labels) * bias_value
+        nn.init.constant_(self.bbox_head.layers[-1].weight.data, 0)
+        nn.init.constant_(self.bbox_head.layers[-1].bias.data, 0)
 
         num_pred = config.decoder_layers  # two_stage False in our temporal model
         if config.with_box_refine:
-            self.count_embed = nn.ModuleList([deepcopy(self.count_embed) for _ in range(num_pred)])
-            self.class_embed = nn.ModuleList([deepcopy(self.class_embed) for _ in range(num_pred)])
-            self.bbox_embed  = nn.ModuleList([deepcopy(self.bbox_embed)  for _ in range(num_pred)])
-            self.captioner   = nn.ModuleList([deepcopy(self.captioner)   for _ in range(num_pred)])
-            self.transformer.decoder.bbox_embed = self.bbox_embed # Hack implementation for iterative bounding box refinement
+            self.count_head   = nn.ModuleList([deepcopy(self.count_head)   for _ in range(num_pred)])
+            self.class_head   = nn.ModuleList([deepcopy(self.class_head)   for _ in range(num_pred)])
+            self.bbox_head    = nn.ModuleList([deepcopy(self.bbox_head)    for _ in range(num_pred)])
+            self.caption_head = nn.ModuleList([deepcopy(self.caption_head) for _ in range(num_pred)])
+            self.transformer.decoder.bbox_head = self.bbox_head # Hack implementation for iterative bounding box refinement
         else:
-            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[1:], -2)
-            self.count_embed = nn.ModuleList([self.count_embed for _ in range(num_pred)])
-            self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
-            self.bbox_embed  = nn.ModuleList([self.bbox_embed  for _ in range(num_pred)])
-            self.captioner   = nn.ModuleList([self.captioner   for _ in range(num_pred)])
-            self.transformer.decoder.bbox_embed = None
+            nn.init.constant_(self.bbox_head.layers[-1].bias.data[1:], -2)
+            self.count_head   = nn.ModuleList([self.count_head   for _ in range(num_pred)])
+            self.class_head   = nn.ModuleList([self.class_head   for _ in range(num_pred)])
+            self.bbox_head    = nn.ModuleList([self.bbox_head    for _ in range(num_pred)])
+            self.caption_head = nn.ModuleList([self.caption_head for _ in range(num_pred)])
+            self.transformer.decoder.bbox_head = None
             
         # self.loss_function = DeformableDetrForObjectDetectionLoss
         self.post_init()
 
 
     def forward(
-        self, pixel_values: torch.FloatTensor, captions: torch.LongTensor, 
+        self, pixel_values: torch.FloatTensor,  
         pixel_mask: Optional[torch.LongTensor] = None,
-        decoder_attention_mask: Optional[torch.FloatTensor] = None,
+        gt_captions: Optional[torch.LongTensor] = None,
         encoder_outputs: Optional[torch.FloatTensor] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[list[dict]] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[tuple[torch.FloatTensor], DeformableDetrObjectDetectionOutput]:
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dic
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # Send images through DETR base model to obtain encoder + decoder outputs
         outputs = self.transformer(
             pixel_values,
             pixel_mask=pixel_mask,
-            decoder_attention_mask=decoder_attention_mask,
             encoder_outputs=encoder_outputs,
-            inputs_embeds=inputs_embeds,
-            decoder_inputs_embeds=decoder_inputs_embeds,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
@@ -103,24 +99,22 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
 
         # We only refine the center (dim 0) using decoder reference; length is predicted as-is and sigmoided
         outputs_counts, outputs_classes, outputs_coords = [], [], []
-        outputs_captions_probs, outputs_captions_seq = [], []
-        
         for level in range(hidden_states.shape[1]):
             lvl_hidden_states = hidden_states[:, level]  # (B, Q, D)
             
             # Count head: (B, num_queries, num_queries+1) logits for 0 to num_queries events
             # Max is to get the most confident prediction across queries
-            outputs_count = self.count_embed[level](torch.max(lvl_hidden_states, dim=1, keepdim=False).values)
+            outputs_count = self.count_head[level](torch.max(lvl_hidden_states, dim=1, keepdim=False).values)
             outputs_counts.append(outputs_count)
             
             # Class head: (B, num_queries, num_classes) logits
-            outputs_class = self.class_embed[level](lvl_hidden_states)  # (B, Q, C)
+            outputs_class = self.class_head[level](lvl_hidden_states)  # (B, Q, C)
             outputs_classes.append(outputs_class)
             
             # Box head: (B, num_queries, 2) (center, width) in [0,1]
-            reference = init_reference if level == 0 else inter_references[:, level - 1] # (B, Q, 2) if level != 0, we 
+            reference = init_reference if level == 0 else inter_references[:, level - 1] # (B, Q, 2) if level != 0, we use previous level
             reference = inverse_sigmoid(reference)                                       # (B, Q, 2)
-            delta_bbox = self.bbox_embed[level](lvl_hidden_states)                       # (B, Q, 2)
+            delta_bbox = self.bbox_head[level](lvl_hidden_states)                        # (B, Q, 2)
             if reference.shape[-1] == 2: delta_bbox += reference
             elif reference.shape[-1] == 1: delta_bbox[..., :1] += reference
             # elif reference.shape[-1] == 1: delta_bbox[..., :2] += reference

@@ -101,10 +101,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         self,
         pixel_values: Tensor,  # (B, C, T)
         pixel_mask: Optional[Tensor] = None,  # (B, T) 1=valid, 0=pad
-        decoder_attention_mask: Optional[Tensor] = None,
         encoder_outputs: Optional[Tensor] = None,
-        inputs_embeds: Optional[Tensor] = None,
-        decoder_inputs_embeds: Optional[Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -205,8 +202,8 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         # query_pos_embed, target = torch.chunk(query_pos_embed, 2, dim=1)
         query_pos_embed, target = torch.split(query_pos_embed, num_channels, dim=1)
         query_pos_embed = query_pos_embed.unsqueeze(0).expand(batch_size, -1, -1)  # (B, Q, C)
-        target = target.unsqueeze(0).expand(batch_size, -1, -1)            # (B, Q, C)
-        reference_points = self.reference_points(query_pos_embed).sigmoid()    # (B, Q, 1)
+        target = target.unsqueeze(0).expand(batch_size, -1, -1)                    # (B, Q, C)
+        reference_points = self.reference_points(query_pos_embed).sigmoid()        # (B, Q, 1)
         init_reference_points = reference_points
         
         decoder_outputs = self.decoder(

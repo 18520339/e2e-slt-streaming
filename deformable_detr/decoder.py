@@ -42,7 +42,7 @@ class DeformableDetrDecoderLayer(GradientCheckpointingLayer):
     ):
         '''
         Args:
-            hidden_states (`FloatTensor`): Input to the layer of shape `(seq_len, batch, embed_dim)`.
+            hidden_states (`FloatTensor`): Input to the layer of shape `(batch_size, num_queries, hidden_size)`.
             position_embeddings (`FloatTensor`, *optional*): Position embeddings that are added to queries and keys in self-attention layer.
             reference_points (`FloatTensor`, *optional*): Reference points.
             temporal_shapes (`LongTensor`, *optional*): Temporal shapes.
@@ -132,8 +132,8 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
                 Position embeddings that are added to the queries and keys in each self-attention layer.
             self_attn_mask (`FloatTensor` of shape `(num_queries, num_queries)`, *optional*):
                 Mask to avoid performing attention on subsequent positions. Mask values selected in `[0, 1]`
-            reference_points (`FloatTensor` of shape `(batch_size, num_queries, 4)` is `as_two_stage` else `(batch_size, num_queries, 2)` or , *optional*):
-                Reference point in range `[0, 1]`, top-left (0,0), bottom-right (1, 1), including padding area.
+            reference_points (`FloatTensor` of shape `(batch_size, num_queries, 1 or 2)`, *optional*):
+                The normalized reference points used in the cross-attention, used to compute the sampling offsets.
             temporal_shapes (`FloatTensor` of shape `(num_feature_levels, 2)`):
                 Temporal shapes of the feature maps.
             level_start_index (`LongTensor` of shape `(num_feature_levels)`, *optional*):
