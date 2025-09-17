@@ -206,8 +206,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
 
         if not return_dict:
             enc_outputs = tuple(value for value in [enc_outputs_class, enc_outputs_coord_logits] if value is not None)
-            tuple_outputs = (init_reference_points,) + decoder_outputs + encoder_outputs + enc_outputs
-            return tuple_outputs
+            return (init_reference_points,) + decoder_outputs + encoder_outputs + enc_outputs
 
         return DeformableDetrModelOutput(
             init_reference_points=init_reference_points,

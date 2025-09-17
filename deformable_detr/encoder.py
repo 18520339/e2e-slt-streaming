@@ -45,14 +45,12 @@ class DeformableDetrEncoderLayer(GradientCheckpointingLayer):
         residual = hidden_states
         hidden_states, attn_weights = self.self_attn(
             hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            encoder_hidden_states=hidden_states,
-            encoder_attention_mask=attention_mask,
             position_embeddings=position_embeddings,
             reference_points=reference_points,
             temporal_shapes=temporal_shapes,
             level_start_index=level_start_index,
-            output_attentions=output_attentions,
+            encoder_hidden_states=encoder_hidden_states,
+            encoder_attention_mask=encoder_attention_mask,
         )
         hidden_states = residual + nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = self.self_attn_layer_norm(hidden_states)

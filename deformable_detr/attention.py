@@ -62,11 +62,9 @@ class TemporalMSDA(nn.Module):
         
 
     def forward(
-        self, hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        encoder_hidden_states=None, encoder_attention_mask=None,
-        position_embeddings: Optional[torch.Tensor] = None, reference_points=None,
-        temporal_shapes=None, level_start_index=None, output_attentions: bool = False,
+        self, hidden_states: torch.Tensor, position_embeddings: Optional[torch.Tensor] = None,
+        reference_points=None, temporal_shapes=None, level_start_index=None,
+        encoder_hidden_states=None, encoder_attention_mask: Optional[torch.Tensor] = None,  
     ):
         # Add position embeddings to the hidden states before projecting to queries and keys
         if position_embeddings is not None: hidden_states += position_embeddings
@@ -76,15 +74,15 @@ class TemporalMSDA(nn.Module):
             raise ValueError('Make sure to align the temporal shapes with the sequence length of the encoder hidden states.')
 
         value = self.value_proj(encoder_hidden_states)
-        if attention_mask is not None: # We invert the attention_mask
-            value = value.masked_fill(~attention_mask[..., None], float(0))
+        if encoder_attention_mask is not None: # We invert the encoder_attention_mask
+            value = value.masked_fill(~encoder_attention_mask[..., None], float(0))
             
         value = value.view(batch_size, sequence_length, self.n_heads, self.d_model // self.n_heads)
         sampling_offsets = self.sampling_offsets(hidden_states).view(batch_size, num_queries, self.n_heads, self.n_levels, self.n_points)
         attention_weights = self.attention_weights(hidden_states).view(batch_size, num_queries, self.n_heads, self.n_levels * self.n_points)
         attention_weights = F.softmax(attention_weights, -1).view(batch_size, num_queries, self.n_heads, self.n_levels, self.n_points)
         
-        sampling_locations = reference_points[:, :, None, :, None, 0]
+        sampling_locations = reference_points[:, :, None, :, None, 0] # (batch_size, num_queries, 1, n_levels, 1)
         if reference_points.shape[-1] == 1:
             sampling_locations += sampling_offsets / temporal_shapes[None, None, None, :, None]
         elif reference_points.shape[-1] == 2:
