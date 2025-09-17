@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor, LongTensor
 from typing import Optional
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
@@ -31,12 +31,12 @@ class DeformableDetrEncoderLayer(GradientCheckpointingLayer):
     ):
         ''' 
         Args:
-            hidden_states (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`): Input to the layer.
-            attention_mask (`torch.FloatTensor` of shape `(batch_size, sequence_length)`): Attention mask.
-            position_embeddings (`torch.FloatTensor`, *optional*): Position embeddings, to be added to `hidden_states`.
-            reference_points (`torch.FloatTensor`, *optional*): Reference points.
-            temporal_shapes (`torch.LongTensor`, *optional*): Temporal shapes of the backbone feature maps.
-            level_start_index (`torch.LongTensor`, *optional*): Level start index.
+            hidden_states (`FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`): Input to the layer.
+            attention_mask (`FloatTensor` of shape `(batch_size, sequence_length)`): Attention mask.
+            position_embeddings (`FloatTensor`, *optional*): Position embeddings, to be added to `hidden_states`.
+            reference_points (`FloatTensor`, *optional*): Reference points.
+            temporal_shapes (`LongTensor`, *optional*): Temporal shapes of the backbone feature maps.
+            level_start_index (`LongTensor`, *optional*): Level start index.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. 
                 See `attentions` under returned tensors for more detail.
@@ -95,11 +95,11 @@ class DeformableDetrEncoder(DeformableDetrPreTrainedModel):
         ''' Get reference points for each feature map. Used in decoder.
 
         Args:
-            temporal_shapes (`torch.LongTensor` of shape `(num_feature_levels,)`): Temporal shapes of each feature map.
-            valid_ratios (`torch.FloatTensor` of shape `(batch_size, num_feature_levels,)`): Valid ratios of each feature map.
+            temporal_shapes (`LongTensor` of shape `(num_feature_levels,)`): Temporal shapes of each feature map.
+            valid_ratios (`FloatTensor` of shape `(batch_size, num_feature_levels,)`): Valid ratios of each feature map.
             device (`torch.device`): Device on which to create the tensors.
         Returns:
-            `torch.FloatTensor` of shape `(batch_size, num_queries, num_feature_levels, 1)`
+            `FloatTensor` of shape `(batch_size, num_queries, num_feature_levels, 1)`
         '''
         reference_points_list = []
         for level, width in enumerate(temporal_shapes):
@@ -120,20 +120,20 @@ class DeformableDetrEncoder(DeformableDetrPreTrainedModel):
     ):
         '''
         Args:
-            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            inputs_embeds (`FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
                 Flattened feature map (output of the backbone + projection layer) that is passed to the encoder.
-            attention_mask (`torch.Tensor` of shape `(batch_size, sequence_length)`, *optional*):
+            attention_mask (`Tensor` of shape `(batch_size, sequence_length)`, *optional*):
                 Mask to avoid performing attention on padding pixel features. Mask values selected in `[0, 1]`:
                 - 1 for pixel features that are real (i.e. **not masked**),
                 - 0 for pixel features that are padding (i.e. **masked**).
                 [What are attention masks?](../glossary#attention-mask)
-            position_embeddings (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
+            position_embeddings (`FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
                 Position embeddings that are added to the queries and keys in each self-attention layer.
-            temporal_shapes (`torch.LongTensor` of shape `(num_feature_levels, 2)`):
+            temporal_shapes (`LongTensor` of shape `(num_feature_levels, 2)`):
                 Temporal shapes of each feature map.
-            level_start_index (`torch.LongTensor` of shape `(num_feature_levels)`):
+            level_start_index (`LongTensor` of shape `(num_feature_levels)`):
                 Starting index of each feature map.
-            valid_ratios (`torch.FloatTensor` of shape `(batch_size, num_feature_levels, 2)`):
+            valid_ratios (`FloatTensor` of shape `(batch_size, num_feature_levels, 2)`):
                 Ratio of valid area in each feature level.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under

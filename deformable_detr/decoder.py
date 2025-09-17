@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor, LongTensor
 from typing import Optional
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
@@ -42,13 +42,13 @@ class DeformableDetrDecoderLayer(GradientCheckpointingLayer):
     ):
         '''
         Args:
-            hidden_states (`torch.FloatTensor`): Input to the layer of shape `(seq_len, batch, embed_dim)`.
-            position_embeddings (`torch.FloatTensor`, *optional*): Position embeddings that are added to queries and keys in self-attention layer.
-            reference_points (`torch.FloatTensor`, *optional*): Reference points.
-            temporal_shapes (`torch.LongTensor`, *optional*): Temporal shapes.
-            level_start_index (`torch.LongTensor`, *optional*): Level start index.
-            encoder_hidden_states (`torch.FloatTensor`): cross attention input to the layer of shape `(seq_len, batch, embed_dim)`
-            encoder_attention_mask (`torch.FloatTensor`): encoder attention mask of size
+            hidden_states (`FloatTensor`): Input to the layer of shape `(seq_len, batch, embed_dim)`.
+            position_embeddings (`FloatTensor`, *optional*): Position embeddings that are added to queries and keys in self-attention layer.
+            reference_points (`FloatTensor`, *optional*): Reference points.
+            temporal_shapes (`LongTensor`, *optional*): Temporal shapes.
+            level_start_index (`LongTensor`, *optional*): Level start index.
+            encoder_hidden_states (`FloatTensor`): cross attention input to the layer of shape `(seq_len, batch, embed_dim)`
+            encoder_attention_mask (`FloatTensor`): encoder attention mask of size
                 `(batch, 1, target_len, source_len)` where padding 
                 elements are indicated by very large negative values.
             output_attentions (`bool`, *optional*):
@@ -120,25 +120,25 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
     ):
         '''
         Args:
-            inputs_embeds (`torch.FloatTensor` of shape `(batch_size, num_queries, hidden_size)`):
+            inputs_embeds (`FloatTensor` of shape `(batch_size, num_queries, hidden_size)`):
                 The query embeddings that are passed into the decoder.
-            encoder_hidden_states (`torch.FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
+            encoder_hidden_states (`FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`, *optional*):
                 Sequence of hidden-states at the output of the last layer of the encoder. Used in the cross-attention of the decoder.
-            encoder_attention_mask (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            encoder_attention_mask (`LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
                 Mask to avoid performing cross-attention on padding pixel_values of the encoder. Mask values selected in `[0, 1]`:
                 - 1 for pixels that are real (i.e. **not masked**),
                 - 0 for pixels that are padding (i.e. **masked**).
-            position_embeddings (`torch.FloatTensor` of shape `(batch_size, num_queries, hidden_size)`, *optional*):
+            position_embeddings (`FloatTensor` of shape `(batch_size, num_queries, hidden_size)`, *optional*):
                 Position embeddings that are added to the queries and keys in each self-attention layer.
-            self_attn_mask (`torch.FloatTensor` of shape `(num_queries, num_queries)`, *optional*):
+            self_attn_mask (`FloatTensor` of shape `(num_queries, num_queries)`, *optional*):
                 Mask to avoid performing attention on subsequent positions. Mask values selected in `[0, 1]`
-            reference_points (`torch.FloatTensor` of shape `(batch_size, num_queries, 4)` is `as_two_stage` else `(batch_size, num_queries, 2)` or , *optional*):
+            reference_points (`FloatTensor` of shape `(batch_size, num_queries, 4)` is `as_two_stage` else `(batch_size, num_queries, 2)` or , *optional*):
                 Reference point in range `[0, 1]`, top-left (0,0), bottom-right (1, 1), including padding area.
-            temporal_shapes (`torch.FloatTensor` of shape `(num_feature_levels, 2)`):
+            temporal_shapes (`FloatTensor` of shape `(num_feature_levels, 2)`):
                 Temporal shapes of the feature maps.
-            level_start_index (`torch.LongTensor` of shape `(num_feature_levels)`, *optional*):
+            level_start_index (`LongTensor` of shape `(num_feature_levels)`, *optional*):
                 Indexes for the start of each feature level. In range `[0, sequence_length]`.
-            valid_ratios (`torch.FloatTensor` of shape `(batch_size, num_feature_levels, 2)`, *optional*):
+            valid_ratios (`FloatTensor` of shape `(batch_size, num_feature_levels, 2)`, *optional*):
                 Ratio of valid area in each feature level.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned tensors for more detail.
@@ -160,9 +160,9 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
 
         for idx, decoder_layer in enumerate(self.layers):
             if reference_points.shape[-1] == 2:
-                reference_points_input = reference_points[:, :, None] * torch.cat([valid_ratios, valid_ratios], -1)[:, None]
+                layer_reference_points = reference_points[:, :, None] * torch.cat([valid_ratios, valid_ratios], -1)[:, None]
             elif reference_points.shape[-1] == 1:
-                reference_points_input = reference_points[:, :, None] * valid_ratios[:, None, :, None]
+                layer_reference_points = reference_points[:, :, None] * valid_ratios[:, None, :, None]
             else: raise ValueError("Reference points' last dimension must be of size 2")
 
             if output_hidden_states: all_hidden_states += (hidden_states,)
@@ -170,7 +170,7 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
                 hidden_states,
                 position_embeddings,
                 self_attn_mask,
-                reference_points_input,
+                layer_reference_points,
                 temporal_shapes,
                 level_start_index,
                 encoder_hidden_states,  # As a positional argument for gradient checkpointing

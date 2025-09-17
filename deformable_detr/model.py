@@ -1,14 +1,45 @@
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
+from torch import nn, Tensor, FloatTensor
 from typing import Union, List, Optional, Tuple
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
     DeformableDetrConvModel, DeformableDetrPreTrainedModel,
-    DeformableDetrModelOutput, BaseModelOutput, build_position_encoding
+    ModelOutput, BaseModelOutput, build_position_encoding
 )
 from encoder import DeformableDetrEncoder
 from decoder import DeformableDetrDecoder
+
+
+class DeformableDetrModelOutput(ModelOutput):
+    '''
+    init_reference_points (`FloatTensor` of shape  `(batch_size, num_queries, 4)`):
+        Initial reference points sent through the Transformer decoder.
+    last_hidden_state (`FloatTensor` of shape `(batch_size, num_queries, hidden_size)`):
+        Sequence of hidden-states at the output of the last layer of the decoder of the model.
+    intermediate_hidden_states (`FloatTensor` of shape `(batch_size, config.decoder_layers, num_queries, hidden_size)`):
+        Stacked intermediate hidden states (output of each layer of the decoder).
+    intermediate_reference_points (`FloatTensor` of shape `(batch_size, config.decoder_layers, num_queries, 4)`):
+        Stacked intermediate reference points (reference points of each layer of the decoder).
+    enc_outputs_class (`FloatTensor` of shape `(batch_size, sequence_length, config.num_labels)`, *optional*, returned when `config.with_box_refine=True` and `config.two_stage=True`):
+        Predicted bounding boxes scores where the top `config.two_stage_num_proposals` scoring bounding boxes are
+        picked as region proposals in the first stage. Output of bounding box binary classification (i.e.
+        foreground and background).
+    enc_outputs_coord_logits (`FloatTensor` of shape `(batch_size, sequence_length, 4)`, *optional*, returned when `config.with_box_refine=True` and `config.two_stage=True`):
+        Logits of predicted bounding boxes coordinates in the first stage.
+    '''
+    init_reference_points: Optional[FloatTensor] = None
+    last_hidden_state: Optional[FloatTensor] = None
+    intermediate_hidden_states: Optional[FloatTensor] = None
+    intermediate_reference_points: Optional[FloatTensor] = None
+    decoder_hidden_states: Optional[tuple[FloatTensor]] = None
+    decoder_attentions: Optional[tuple[FloatTensor]] = None
+    cross_attentions: Optional[tuple[FloatTensor]] = None
+    encoder_last_hidden_state: Optional[FloatTensor] = None
+    encoder_hidden_states: Optional[tuple[FloatTensor]] = None
+    encoder_attentions: Optional[tuple[FloatTensor]] = None
+    enc_outputs_class: Optional[FloatTensor] = None
+    enc_outputs_coord_logits: Optional[FloatTensor] = None
 
 
 class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D features
@@ -88,7 +119,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.FloatTensor], DeformableDetrModelOutput]:
+    ) -> Union[tuple[FloatTensor], DeformableDetrModelOutput]:
         assert pixel_values.dim() == 3, 'Temporal model expects pixel_values of shape (B, C, T)'
         if output_attentions is None: output_attentions = self.config.output_attentions
         if output_hidden_states is None: output_hidden_states = self.config.output_hidden_states

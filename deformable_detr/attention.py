@@ -62,9 +62,9 @@ class TemporalMSDA(nn.Module):
         
 
     def forward(
-        self, hidden_states: torch.Tensor, position_embeddings: Optional[torch.Tensor] = None,
+        self, hidden_states: Tensor, position_embeddings: Optional[Tensor] = None,
         reference_points=None, temporal_shapes=None, level_start_index=None,
-        encoder_hidden_states=None, encoder_attention_mask: Optional[torch.Tensor] = None,  
+        encoder_hidden_states=None, encoder_attention_mask: Optional[Tensor] = None,  
     ):
         # Add position embeddings to the hidden states before projecting to queries and keys
         if position_embeddings is not None: hidden_states += position_embeddings
