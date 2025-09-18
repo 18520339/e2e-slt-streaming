@@ -8,7 +8,7 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
     DeformableDetrPreTrainedModel, DeformableDetrDecoderOutput,
     BaseModelOutput, inverse_sigmoid
 )
-from attention import TemporalMSDA
+from .attention import TemporalMSDA
 
 
 class DeformableDetrDecoderLayer(GradientCheckpointingLayer):

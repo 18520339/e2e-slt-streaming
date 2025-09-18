@@ -7,8 +7,8 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
     DeformableDetrConvModel, DeformableDetrPreTrainedModel,
     ModelOutput, BaseModelOutput, build_position_encoding
 )
-from encoder import DeformableDetrEncoder
-from decoder import DeformableDetrDecoder
+from .encoder import DeformableDetrEncoder
+from .decoder import DeformableDetrDecoder
 
 
 class DeformableDetrModelOutput(ModelOutput):

@@ -3,11 +3,8 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
-from gcn_utils import Graph
-from st_gcn_block import get_stgcn_chain
-
-from pathlib import Path
-sys.path.append(str(Path(__file__).parent.parent))
+from .gcn_utils import Graph
+from .st_gcn_block import get_stgcn_chain
 from config import *
 
 
@@ -40,7 +37,7 @@ def generate_mask(shape, ratio, dim):
     return mask_cat_q, mask_cat_k
 
 
-class CoSign(nn.Module):
+class CoSign1s(nn.Module):
     def __init__(self, temporal_kernel, hidden_size, level='spatial', adaptive=True, mask_ratio=0.3):
         super().__init__()
         self.graph, A = {}, {}

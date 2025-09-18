@@ -17,24 +17,46 @@ if is_accelerate_available():
     
 class DeformableDetrHungarianMatcher(HungarianMatcher):
     '''
-    Hungarian matcher for 1D temporal boxes/segments using SciPy's linear_sum_assignment with class, L1, and IoU costs.
-    cost = class_cost + bbox_cost * L1(cw_pred, cw_tgt) + giou_cost * (1 - IoU(pred_se, tgt_se))
+    This class computes an assignment between the targets and the predictions of the network.
+    For efficiency reasons, the targets don't include the no_object. Because of this, in general, there are more
+    predictions than targets. In this case, we do a 1-to-1 matching of the best predictions, while the others are
+    un-matched (and thus treated as non-objects).
+
+    Args:
+        class_cost: The relative weight of the classification error in the matching cost.
+        bbox_cost: The relative weight of the L1 error of the bounding box coordinates in the matching cost.
+        giou_cost: The relative weight of the GIoU loss of the bounding box in the matching cost.
     '''
     @torch.no_grad()
     def forward(self, outputs: Dict[str, Tensor], targets: List[Dict[str, Tensor]]) -> List[Tuple[Tensor, Tensor]]:
         '''
-        outputs:
-        - 'logits': (B, Q, C) raw class logits with C = num_classes (+1 for no-object at some index)
-        - 'pred_boxes': (B, Q, 2) predicted (center, length) in [0,1]
-          
-        targets: list of length B, each dict has:
-        - 'class_labels': (N_i,) int64 in [0..C-1], foreground classes only (no no-object here).
-        - 'boxes':        (N_i, 2) in [0,1], (center,width) or (start,end). This matcher expects (center,width).
-        Returns: list of (predicted indices, target indices) per batch element.
+        outputs (`dict`):
+            A dictionary that contains at least these entries:
+            * "logits": Tensor of dim [batch_size, num_queries, num_classes] with the classification logits (+1 for no-object at some index).
+            * "pred_boxes": Tensor of dim [batch_size, num_queries, 2] with the predicted box coordinates (center, width) in [0,1].
+        targets (`list[dict]`):
+            A list of targets (len(targets) = batch_size), where each target is a dict containing:
+            * "class_labels": Tensor of dim [num_target_boxes] (where num_target_boxes is the number of
+                ground-truth objects in the target) containing the class labels (no no-object here).
+            * "boxes": Tensor of dim [num_target_boxes, 2] containing the target box coordinates.
+                in [0,1], (center,width) or (start,end). This matcher expects (center,width)
+        
+        Returns:
+            `list[Tuple]`: A list of size `batch_size`, containing tuples of (index_i, index_j) where:
+            - index_i is the indices of the selected predictions (in order)
+            - index_j is the indices of the corresponding selected targets (in order)
+            For each batch element, it holds: len(index_i) = len(index_j) = min(num_queries, num_target_boxes)
+            
+        For example: 
+            We have a batch of 3 elements, with each element having 4, 3, and 5 target boxes respectively.
+            If we set num_queries to 4, this function might return:
+            [ (tensor([0, 1, 2, 3]), tensor([2, 0, 1, 2])),  # for the 1st batch element: 4 predictions, 4 targets
+              (tensor([0, 1, 2]),    tensor([1, 2, 0])),     # for the 2nd batch element: 3 predictions, 3 targets
+              (tensor([0, 1, 2, 3]), tensor([4, 0, 1, 2])) ] # for the 3rd batch element: 4 predictions, 4 targets
         '''
         batch_size, num_queries = outputs['logits'].shape[:2]
         out_prob = outputs['logits'].flatten(0, 1).sigmoid()
-        out_bbox = outputs['pred_boxes'].flatten(0, 1)  # [batch_size * num_queries, 4]
+        out_bbox = outputs['pred_boxes'].flatten(0, 1)  # [batch_size * num_queries, 2]
 
         # Also concat the target labels and boxes
         target_ids = torch.cat([v['class_labels'] for v in targets])
@@ -51,7 +73,7 @@ class DeformableDetrHungarianMatcher(HungarianMatcher):
         giou_cost = -generalized_box_iou(cw_to_se(out_bbox), cw_to_se(target_bbox))
 
         # Final cost matrix
-        cost_matrix = self.bbox_cost * bbox_cost + self.class_cost * class_cost + self.giou_cost * giou_cost
+        cost_matrix = self.class_cost * class_cost + self.bbox_cost * bbox_cost + self.giou_cost * giou_cost
         cost_matrix = cost_matrix.view(batch_size, num_queries, -1).cpu()
 
         sizes = [len(v['boxes']) for v in targets]
@@ -106,7 +128,7 @@ class DeformableDetrImageLoss(ImageLoss):
         pred_counts = outputs['pred_counts']
         max_length = pred_counts.shape[1] - 1
         target_counters = torch.tensor(
-            [len(target['boxes']) for target in targets if len(target['boxes']) < max_length else max_length], 
+            [len(target['boxes']) if len(target['boxes']) < max_length else max_length for target in targets], 
             device=source_logits.device, dtype=torch.long
         )
         target_counters_onehot = torch.zeros_like(pred_counts)

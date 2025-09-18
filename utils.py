@@ -118,7 +118,7 @@ def ensure_cw_format(boxes: torch.Tensor) -> torch.Tensor:
     return boxes
 
 
-def box_iou(pred_se: Tensor, target_se: Tensor) -> Tensor:
+def box_iou(pred_se: torch.Tensor, target_se: torch.Tensor) -> torch.Tensor:
     area1 = pred_se[:, 1] - pred_se[:, 0]
     area2 = target_se[:, 1] - target_se[:, 0]
     left_top = torch.max(pred_se[:, None, 0], target_se[:, 0])

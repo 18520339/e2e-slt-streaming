@@ -7,7 +7,7 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
     ACT2FN, GradientCheckpointingLayer, 
     DeformableDetrPreTrainedModel, BaseModelOutput
 )
-from attention import TemporalMSDA
+from .attention import TemporalMSDA
 
 
 class DeformableDetrEncoderLayer(GradientCheckpointingLayer):
