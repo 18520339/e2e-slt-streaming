@@ -28,7 +28,6 @@ class DeformableDetrModelOutput(ModelOutput):
     temporal_shapes: Optional[FloatTensor] = None
     level_start_index: Optional[FloatTensor] = None
     valid_ratios: Optional[FloatTensor] = None
-    self_attn_mask: Optional[FloatTensor] = None
     
 
 class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D features
@@ -242,5 +241,4 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             temporal_shapes=temporal_shapes,
             level_start_index=level_start_index,
             valid_ratios=valid_ratios,
-            self_attn_mask=self_attn_mask,
         )

@@ -58,7 +58,7 @@ class DeformableDetrDecoderLayer(GradientCheckpointingLayer):
         # Self Attention
         residual = hidden_states
         q = k = hidden_states if position_embeddings is None else hidden_states + position_embeddings
-        hidden_states, self_attn_weights  = self.self_attn(q, k, hidden_states, key_padding_mask=~self_attn_mask)
+        hidden_states, self_attn_weights = self.self_attn(q, k, hidden_states, key_padding_mask=~self_attn_mask)
         hidden_states = residual + nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = self.self_attn_layer_norm(hidden_states)
 
