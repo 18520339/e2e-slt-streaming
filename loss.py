@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-from typing import List, Tuple
+from typing import List, Dict, Tuple
 from scipy.optimize import linear_sum_assignment
+
 from transformers.loss.loss_for_object_detection import (
     HungarianMatcher, ImageLoss, 
     _set_aux_loss, sigmoid_focal_loss,
@@ -17,11 +18,11 @@ if is_accelerate_available():
     
 class DeformableDetrHungarianMatcher(HungarianMatcher):
     '''
-    This class computes an assignment between the targets and the predictions of the network.
-    For efficiency reasons, the targets don't include the no_object. Because of this, in general, there are more
-    predictions than targets. In this case, we do a 1-to-1 matching of the best predictions, while the others are
-    un-matched (and thus treated as non-objects).
-
+    This class computes an assignment between the targets and the predictions of the network. 
+    For efficiency reasons, the targets don't include the no_object. In general, there are more predictions than targets. 
+    In this case, we do a 1-to-1 matching of the best predictions, while the others are un-matched (and thus treated as non-objects).
+    cost = cost = λ_cls * class_cost + λ_L1 * L1(cw_pred, cw_tgt) + λ_GIoU * (1 - IoU(pred_se, tgt_se))
+    
     Args:
         class_cost: The relative weight of the classification error in the matching cost.
         bbox_cost: The relative weight of the L1 error of the bounding box coordinates in the matching cost.
