@@ -134,11 +134,11 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
                 Mask to avoid performing attention on subsequent positions. Mask values selected in `[0, 1]`
             reference_points (`FloatTensor` of shape `(batch_size, num_queries, 1 or 2)`, *optional*):
                 The normalized reference points used in the cross-attention, used to compute the sampling offsets.
-            temporal_shapes (`FloatTensor` of shape `(num_feature_levels, 2)`):
+            temporal_shapes (`FloatTensor` of shape `(num_feature_levels,)`):
                 Temporal shapes of the feature maps.
             level_start_index (`LongTensor` of shape `(num_feature_levels)`, *optional*):
                 Indexes for the start of each feature level. In range `[0, sequence_length]`.
-            valid_ratios (`FloatTensor` of shape `(batch_size, num_feature_levels, 2)`, *optional*):
+            valid_ratios (`FloatTensor` of shape `(batch_size, num_feature_levels,)`, *optional*):
                 Ratio of valid area in each feature level.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under returned tensors for more detail.

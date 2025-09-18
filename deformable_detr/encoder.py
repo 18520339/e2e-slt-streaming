@@ -129,11 +129,11 @@ class DeformableDetrEncoder(DeformableDetrPreTrainedModel):
                 [What are attention masks?](../glossary#attention-mask)
             position_embeddings (`FloatTensor` of shape `(batch_size, sequence_length, hidden_size)`):
                 Position embeddings that are added to the queries and keys in each self-attention layer.
-            temporal_shapes (`LongTensor` of shape `(num_feature_levels, 2)`):
+            temporal_shapes (`LongTensor` of shape `(num_feature_levels,)`):
                 Temporal shapes of each feature map.
             level_start_index (`LongTensor` of shape `(num_feature_levels)`):
                 Starting index of each feature map.
-            valid_ratios (`FloatTensor` of shape `(batch_size, num_feature_levels, 2)`):
+            valid_ratios (`FloatTensor` of shape `(batch_size, num_feature_levels,)`):
                 Ratio of valid area in each feature level.
             output_attentions (`bool`, *optional*):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under

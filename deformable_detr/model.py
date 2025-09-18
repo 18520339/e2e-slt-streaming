@@ -4,9 +4,11 @@ from torch import nn, Tensor, FloatTensor
 from typing import Union, List, Optional, Tuple
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
-    DeformableDetrConvModel, DeformableDetrPreTrainedModel,
-    DeformableDetrModelOutput, BaseModelOutput, build_position_encoding
+    DeformableDetrPreTrainedModel, 
+    DeformableDetrModelOutput, BaseModelOutput
 )
+from backbones import CoSign1s
+from .position_encoding import PositionEmbeddingSine
 from .encoder import DeformableDetrEncoder
 from .decoder import DeformableDetrDecoder
 
@@ -18,6 +20,18 @@ class PDVCTransformerOutput(DeformableDetrModelOutput):
     valid_ratios: Optional[FloatTensor] = None
     
 
+# Copied from transformers.models.detr.modeling_detr.DetrConvModel with Detr->DeformableDetr
+    def forward(self, pixel_values, pixel_mask):
+        # send pixel_values and pixel_mask through backbone to get list of (feature_map, pixel_mask) tuples
+        out = self.conv_encoder(pixel_values, pixel_mask)
+        pos = []
+        for feature_map, mask in out:
+            # position encoding
+            pos.append(self.position_embedding(feature_map, mask).to(feature_map.dtype))
+
+        return out, pos
+    
+
 class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D features
     '''
     A temporal variant of HF transformers.DeformableDetrModel:
@@ -25,35 +39,24 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
     - Builds multi-scale features as (B, C, 1, T_l)
     - Keeps the same encoder/decoder, temporal_shapes, valid_ratios logic (with height=1)
     '''
-    def __init__(self, config: DeformableDetrConfig, temporal_channels: Optional[List[int]] = None):
+    def __init__(self, config: DeformableDetrConfig, temporal_kernel=5):
         super().__init__(config)
         if self.config.two_stage:
             raise NotImplementedError('two_stage=True is not supported in the temporal variant')
-        elif temporal_channels is None:
-            temporal_channels = [config.d_model * 2 ** l for l in range(config.num_feature_levels)]
             
-        # Temporal backbone + positional encoding
-        backbone = TemporalConvEncoder(
-            in_channels=config.num_channels,
-            channels=temporal_channels,
-            strides=[2] * len(temporal_channels),
-            kernel_sizes=[5] + [3] * (len(temporal_channels) - 1),
-            norm=True,
-        )
-        position_embeddings = build_position_encoding(config)
-        self.backbone = DeformableDetrConvModel(backbone, position_embeddings)
+        # Positional encoding: d_model//2 for temporal pos, d_model//2 for duration pos
+        self.position_embeddings = PositionEmbeddingSine(config.d_model // 2, normalize=True)
+        self.backbone = CoSign1s(temporal_kernel=temporal_kernel, hidden_size=config.d_model)
 
         # Input projection: map each backbone level to d_model with 1x1 Conv2d
         if config.num_feature_levels > 1:
-            num_backbone_outs = len(backbone.intermediate_channel_sizes)
             input_proj_list = []
-            for level in range(num_backbone_outs):
-                in_channels = backbone.intermediate_channel_sizes[level]
-                input_proj_list.append(nn.Sequential(
-                    nn.Conv1d(in_channels, config.d_model, kernel_size=1), 
-                    nn.GroupNorm(32, config.d_model)
-                ))
-            for _ in range(config.num_feature_levels - num_backbone_outs): # Extra levels from last backbone level
+            in_channels = config.d_model
+            input_proj_list.append(nn.Sequential(
+                nn.Conv1d(in_channels, config.d_model, kernel_size=1), 
+                nn.GroupNorm(32, config.d_model)
+            ))
+            for _ in range(config.num_feature_levels - 1): # Extra levels from last backbone level
                 input_proj_list.append(nn.Sequential(
                     nn.Conv1d(in_channels, config.d_model, kernel_size=3, stride=2, padding=1),
                     nn.GroupNorm(32, config.d_model),
@@ -62,7 +65,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             self.input_proj = nn.ModuleList(input_proj_list)
         else:
             self.input_proj = nn.ModuleList([nn.Sequential(
-                nn.Conv1d(backbone.intermediate_channel_sizes[-1], config.d_model, kernel_size=1),
+                nn.Conv1d(config.d_model, config.d_model, kernel_size=1),
                 nn.GroupNorm(32, config.d_model),
             )])
 
@@ -86,52 +89,45 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
 
     def forward(
         self,
-        pixel_values: Tensor,  # (B, C, T)
+        pixel_values: Tensor,                 # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
         pixel_mask: Optional[Tensor] = None,  # (B, T) 1=valid, 0=pad
         encoder_outputs: Optional[Tensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[tuple[FloatTensor], PDVCTransformerOutput]:
-        assert pixel_values.dim() == 3, 'Temporal model expects pixel_values of shape (B, C, T)'
+        assert pixel_values.dim() == 4 and pixel_values.shape[-1] == 3, 'Expected (B, T, K, 3)'
         if output_attentions is None: output_attentions = self.config.output_attentions
         if output_hidden_states is None: output_hidden_states = self.config.output_hidden_states
         if return_dict is None: return_dict = self.config.use_return_dict
         
+        pixel_values = self.backbone(pixel_values).permute(0, 2, 1) # [B, d_model, T]
         B, C, T = pixel_values.shape
         device = pixel_values.device
         if pixel_mask is None: pixel_mask = torch.ones((B, T), dtype=torch.long, device=device)
-
-        # Extract multi-scale feature maps of same resolution `config.d_model` (cf Figure 4 in paper)
-        # First, sent pixel_values + pixel_mask through Backbone to obtain the features
-        # which is a list of tuples (feature_map, mask) for each level
-        features, position_embeddings_list = self.backbone(pixel_values, pixel_mask)  # list of levels
         
-        # Then, apply 1x1 convolution to reduce the channel dimension to d_model (256 by default)
-        sources, masks = [], [] # Shape: (L, B, C_l, T_l), (L, B, T_l)
-        for level, (source, mask) in enumerate(features):
-            sources.append(self.input_proj[level](source))
-            masks.append(mask)
-            if mask is None: raise ValueError('No attention mask was provided')
+        pos_level0 = self.position_embeddings(pixel_values, pixel_mask, durations=torch.sum(pixel_mask, 1)) # (B, d_model, T)
+        source_level0 = self.input_proj[0](pixel_values) # (B, d_model, T)
+        mask_level0 = pixel_mask                         # (B, T) 1=valid, 0=pad
+        sources, masks, position_embeddings_list = [source_level0], [mask_level0], [pos_level0]
+        if pixel_mask is None: raise ValueError('No attention mask was provided')
 
         # Add extra pyramid levels if the current number of levels in the backbone is less than num_feature_levels
         # Lowest resolution feature maps are obtained via 3x3 stride 2 convolutions on the final stage
-        if self.config.num_feature_levels > len(sources):
-            _len_sources = len(sources)
-            for level in range(_len_sources, self.config.num_feature_levels):
-                if level == _len_sources: # First extra level from last backbone feature map
-                    source = self.input_proj[level](features[-1][0]) 
-                    base_mask = features[-1][1]  # (B, T_last)
-                else: # Further levels from previous extra level
-                    source = self.input_proj[level](sources[-1])
-                    base_mask = masks[-1]
-                    
-                # Resize mask to new temporal size
-                mask = F.interpolate(base_mask.float(), size=source.shape[-2:]).to(torch.bool)
-                pos_l = self.backbone.position_embedding(source, mask).to(source.dtype)
-                sources.append(source)
-                masks.append(mask)
-                position_embeddings_list.append(pos_l)
+        for level in range(1, self.config.num_feature_levels):
+            if level == 1: # First extra level from last backbone feature map
+                source = self.input_proj[level](pixel_values) # (B, d_model, T/2)
+                base_mask = pixel_mask
+            else: # Further levels from previous extra level
+                source = self.input_proj[level](sources[-1])  # (B, d_model, T/4), (B, d_model, T/8), ...
+                base_mask = masks[-1]
+                
+            # Resize mask to new temporal size
+            mask = F.interpolate(base_mask[None].float(), size=source.shape[-1:]).to(torch.bool)
+            pos_l = self.position_embeddings(source, mask).to(source.dtype)
+            sources.append(source)
+            masks.append(mask) # (B, T/2), (B, T/4), ...
+            position_embeddings_list.append(pos_l)
 
         # Prepare encoder inputs (by flattening)
         source_flatten, mask_flatten, lvl_pos_embed_flatten = [], [], []
@@ -140,22 +136,21 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             batch_size, _, width = source.shape
             temporal_shapes.append(width)
             
-            source = source.flatten(2).transpose(1, 2)        # (B, H*W, C) = (B, W, C)
-            mask = mask.flatten(1)                            # (B, H*W)    = (B, W)
-            pos_embed = pos_embed.flatten(2).transpose(1, 2)  # (B, H*W, C) = (B, W, C)
+            source = source.transpose(1, 2)        # (B, T, C) 
+            pos_embed = pos_embed.transpose(1, 2)  # (B, T, C)
             lvl_pos_embed = pos_embed + self.level_embed[level].view(1, 1, -1)
             
             source_flatten.append(source)
             mask_flatten.append(mask)
             lvl_pos_embed_flatten.append(lvl_pos_embed)
-            
-        source_flatten = torch.cat(source_flatten, 1)               # (B, sum(W_l), C)
-        mask_flatten = torch.cat(mask_flatten, 1)                   # (B, sum(W_l))
-        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1) # (B, sum(W_l), C)
 
-        temporal_shapes = torch.as_tensor(temporal_shapes, dtype=torch.long, device=source_flatten.device)       # (L, 2)
+        source_flatten = torch.cat(source_flatten, 1)                # (B, \sum{T_l}, C)
+        mask_flatten = torch.cat(mask_flatten, 1)                    # (B, \sum{T_l})
+        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)  # (B, \sum{T_l}, C)
+
+        temporal_shapes = torch.as_tensor(temporal_shapes, dtype=torch.long, device=source_flatten.device)       # (L,)
         level_start_index = torch.cat((temporal_shapes.new_zeros((1,)), temporal_shapes.prod(1).cumsum(0)[:-1])) # (L,)
-        valid_ratios = torch.stack([torch.sum(~m, 1).to(source_flatten.dtype) / m.shape[1] for m in masks], 1) # (B, L, 1)
+        valid_ratios = torch.stack([torch.sum(m, 1).to(source_flatten.dtype) / m.shape[1] for m in masks], 1)    # (B, L) 
 
         # Send source_flatten + mask_flatten + lvl_pos_embed_flatten (backbone + proj layer output) through encoder
         # Also provide temporal_shapes, level_start_index and valid_ratios

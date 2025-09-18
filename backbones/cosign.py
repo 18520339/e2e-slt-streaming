@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from .gcn_utils import Graph
-from .st_gcn_block import get_stgcn_chain
+from .stgcn_block import get_stgcn_chain
 from config import *
 
 
@@ -57,7 +57,6 @@ class CoSign1s(nn.Module):
         self.pool_func = F.avg_pool2d
         self.gcn_modules = nn.ModuleDict(self.gcn_modules)
         self.fusion = nn.Sequential(nn.Linear(final_dim * len(KPS_MODULES), hidden_size), nn.ReLU(inplace=True))
-        self.out_size = hidden_size
         self.final_dim = final_dim
     
     
@@ -68,16 +67,16 @@ class CoSign1s(nn.Module):
             part_feat = self.gcn_modules[module](features[..., kps_rng[0]: kps_rng[1]])
             pooled_feat = self.pool_func(part_feat, (1, kps_rng[1] - kps_rng[0])).squeeze(-1)
             feat_list.append(pooled_feat)
-        return torch.cat(feat_list, dim=1)
+        return torch.cat(feat_list, dim=1) # Shape: [B, final_dim * parts, T]
     
     
     def forward(self, x):
         # linear stage x.shape: [B(N), T, 77(K), 3(C)]
-        static = self.linear(x).permute(0, 3, 1, 2) # [B, C, T, K]
-        cat_feat = self.process_part_features(static).transpose(1, 2) # [B, T, C]
+        static = self.linear(x).permute(0, 3, 1, 2) # [B, 64, T, 77]
+        cat_feat = self.process_part_features(static).transpose(1, 2) # [B, T, final_dim * parts]
 
         if self.training:
             mask_view1, mask_view2 = generate_mask(cat_feat.shape, self.mask_ratio, self.final_dim)
             view1, view2 = mask_view1.to(cat_feat.device) * cat_feat, mask_view2.to(cat_feat.device) * cat_feat
-            return {'view1': self.fusion(view1)} # [B, T, hidden]
-        return {'cat': cat_feat, 'fusion': self.fusion(cat_feat)}
+            return self.fusion(view1) # [B, T, hidden_size]
+        return self.fusion(cat_feat)  # [B, T, hidden_size]
