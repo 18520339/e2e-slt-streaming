@@ -5,25 +5,13 @@ from typing import Union, List, Optional, Tuple
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
     DeformableDetrConvModel, DeformableDetrPreTrainedModel,
-    ModelOutput, BaseModelOutput, build_position_encoding
+    DeformableDetrModelOutput, BaseModelOutput, build_position_encoding
 )
 from .encoder import DeformableDetrEncoder
 from .decoder import DeformableDetrDecoder
 
 
-class DeformableDetrModelOutput(ModelOutput):
-    init_reference_points: Optional[FloatTensor] = None
-    last_hidden_state: Optional[FloatTensor] = None
-    intermediate_hidden_states: Optional[FloatTensor] = None
-    intermediate_reference_points: Optional[FloatTensor] = None
-    decoder_hidden_states: Optional[tuple[FloatTensor]] = None
-    decoder_attentions: Optional[tuple[FloatTensor]] = None
-    cross_attentions: Optional[tuple[FloatTensor]] = None
-    encoder_last_hidden_state: Optional[FloatTensor] = None
-    encoder_hidden_states: Optional[tuple[FloatTensor]] = None
-    encoder_attentions: Optional[tuple[FloatTensor]] = None
-    enc_outputs_class: Optional[FloatTensor] = None
-    enc_outputs_coord_logits: Optional[FloatTensor] = None
+class PDVCTransformerOutput(DeformableDetrModelOutput):
     mask_flatten: Optional[FloatTensor] = None
     temporal_shapes: Optional[FloatTensor] = None
     level_start_index: Optional[FloatTensor] = None
@@ -104,7 +92,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[tuple[FloatTensor], DeformableDetrModelOutput]:
+    ) -> Union[tuple[FloatTensor], PDVCTransformerOutput]:
         assert pixel_values.dim() == 3, 'Temporal model expects pixel_values of shape (B, C, T)'
         if output_attentions is None: output_attentions = self.config.output_attentions
         if output_hidden_states is None: output_hidden_states = self.config.output_hidden_states
@@ -224,7 +212,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             enc_outputs = tuple(value for value in [enc_outputs_class, enc_outputs_coord_logits] if value is not None)
             return (init_reference_points,) + decoder_outputs + encoder_outputs + enc_outputs
 
-        return DeformableDetrModelOutput(
+        return PDVCTransformerOutput(
             init_reference_points=init_reference_points,
             last_hidden_state=decoder_outputs.last_hidden_state,
             intermediate_hidden_states=decoder_outputs.intermediate_hidden_states,
