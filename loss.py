@@ -87,17 +87,19 @@ class PDVCLoss(ImageLoss):
     1) We compute Hungarian assignment between ground truth boxes and the outputs of the model
     2) We supervise each pair of matched ground-truth / prediction (supervise class and box)
     '''
-    def __init__(self, matcher, num_classes, focal_alpha, losses):
+    def __init__(self, matcher, num_classes, focal_alpha, pad_token_id, losses):
         ''' Create the criterion
         num_classes: number of object categories, omitting the special no-object category
         matcher: module able to compute a matching between targets and proposals
         focal_alpha: alpha in Focal Loss
+        pad_token_id: The padding token id for captions
         losses: list of all the losses to be applied. See get_loss for list of available losses.
         '''
         nn.Module.__init__(self)
         self.matcher = matcher
         self.num_classes = num_classes
         self.focal_alpha = focal_alpha
+        self.pad_token_id = pad_token_id
         self.losses = losses
         
 
@@ -178,12 +180,17 @@ class PDVCLoss(ImageLoss):
         source_logits = outputs['pred_cap_logits'][idx]  # [batch_size, num_matched, max_len - 1, vocab_size + 1]
         target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size, num_matched, max_len]
         target_tokens = target_tokens[:, :, 1:source_logits.shape[2] + 1]  # Remove the start token for targets
+        target_masks = (target_tokens != self.pad_token_id).long()         # [batch_size, num_matched, max_len - 1]
+        target_masks = target_masks.view(-1, target_masks.shape[-1])       # [batch_size * num_matched, max_len - 1]
         
         loss_caption = F.cross_entropy(
             source_logits.reshape(-1, source_logits.shape[-1]), # [batch_size * num_matched * (max_len - 1), vocab_size + 1]
             target_tokens.reshape(-1),                          # [batch_size * num_matched * (max_len - 1)]
-            ignore_index=0, reduction='mean'
-        )
+            ignore_index=self.pad_token_id, 
+            reduction='none'
+        ).view(target_masks.shape)                              # [batch_size * num_matched, max_len - 1]
+        
+        loss_caption = (loss_caption * target_masks).sum() / target_masks.sum().clamp(min=1)
         return {'loss_caption': loss_caption}
         
             
@@ -232,7 +239,10 @@ class PDVCLoss(ImageLoss):
         
         
 class DeformableDetrForObjectDetectionLoss(nn.Module):
-    def __init__(self, config, weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}):
+    def __init__(
+        self, config, pad_token_id=0,
+        weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
+    ):
         super().__init__()
         self.config = config
         self.weight_dict = weight_dict
@@ -241,6 +251,7 @@ class DeformableDetrForObjectDetectionLoss(nn.Module):
             matcher=DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost), 
             num_classes=config.num_labels, 
             focal_alpha=config.focal_alpha, 
+            pad_token_id=pad_token_id,
             losses=['labels', 'boxes', 'cardinality', 'captions']
         )
         

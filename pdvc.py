@@ -44,7 +44,11 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     _tied_weights_keys = [r"bbox_head\.[1-9]\d*", r"class_head\.[1-9]\d*"] # When using clones, all layers > 0 will be clones, but layer 0 *is* required
     _no_split_modules = None # We can't initialize the model on meta device as some weights are modified during the initialization
     
-    def __init__(self, config: DeformableDetrConfig, vocab_size=30522, rnn_num_layers=1, dropout_rate=0.1, max_caption_len=20):
+    def __init__(
+        self, config: DeformableDetrConfig, 
+        vocab_size: int, bos_token_id: int, eos_token_id: int, pad_token_id: int,
+        rnn_num_layers=1, dropout_rate=0.1, max_caption_len=20
+    ):
         super().__init__(config)
         self.transformer = DeformableDetrModel(config) # Deformable DETR encoder-decoder model
         
@@ -53,8 +57,8 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.class_head = nn.Linear(config.d_model, config.num_labels)       # Num of foreground classes, no 'no-object' here
         self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
         self.caption_head = DeformableCaptioner(
-            config, vocab_size=vocab_size, rnn_num_layers=rnn_num_layers, 
-            dropout_rate=dropout_rate, max_caption_len=max_caption_len
+            config, vocab_size=vocab_size, bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
+            rnn_num_layers=rnn_num_layers, dropout_rate=dropout_rate, max_caption_len=max_caption_len
         )
         bias_value = -math.log((1 - 0.01) / 0.01)
         self.class_head.bias.data = torch.ones(config.num_labels) * bias_value

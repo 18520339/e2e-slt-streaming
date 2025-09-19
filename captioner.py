@@ -65,16 +65,23 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
 
 
 class DeformableCaptioner(nn.Module):
-    def __init__(self, config, vocab_size, rnn_num_layers, dropout_rate, max_caption_len):
+    def __init__(
+        self, config, vocab_size, bos_token_id, eos_token_id, pad_token_id,
+        rnn_num_layers, dropout_rate, max_caption_len
+    ):
         super().__init__()
         self.config = config
         self.vocab_size = vocab_size
+        self.bos_token_id = bos_token_id
+        self.eos_token_id = eos_token_id
+        self.pad_token_id = pad_token_id
+        
         self.rnn_num_layers = rnn_num_layers
         self.max_caption_len = max_caption_len
         self.deformable_rnn = DeformableLSTM(config, rnn_num_layers, dropout_rate)
 
         self.schedule_sampling_prob = 0.25
-        self.embed = nn.Embedding(self.vocab_size + 1, config.d_model)
+        self.embed = nn.Embedding(self.vocab_size + 1, config.d_model, padding_idx=pad_token_id) # +1 for <BOS>
         self.logit = nn.Linear(config.d_model, self.vocab_size + 1)
         self.dropout = nn.Dropout(dropout_rate)
 
@@ -147,8 +154,8 @@ class DeformableCaptioner(nn.Module):
         num_events = batch_size * num_queries
         
         seq_log_probs, seq_tokens = [], []
-        token = decoder_hidden_states.new_zeros(num_events, dtype=torch.long) # Initialize with <BOS> for all events (B*Q)
-        unfinished = None
+        token = torch.full((num_events,), self.bos_token_id, dtype=torch.long) # Initialize with <BOS> for all events (B*Q)
+        done = torch.zeros_like(token).bool()
 
         for t in range(self.max_caption_len):
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
@@ -160,12 +167,12 @@ class DeformableCaptioner(nn.Module):
                 next_token = torch.multinomial(prob_prev, 1).view(-1).long()
                 step_log_probs = output.gather(1, next_token.unsqueeze(1)).view(-1) # Gather the output at sampled positions
 
-            unfinished = (next_token > 0) if (unfinished is None) else (unfinished & (next_token > 0)) # End token assumed to be 0
-            if unfinished.sum() == 0: break # Stop when all finished
-            next_token = next_token * unfinished.long() # Mask out finished sequences
+            done = done | (next_token == self.eos_token_id) | (next_token == self.pad_token_id)
+            if done.all(): break # Stop when all finished
+            next_token = next_token * (~done).long() # Mask out finished sequences
             seq_log_probs.append(step_log_probs)
             seq_tokens.append(next_token)
-            token = next_token # feed next token
+            token = next_token # Feed next token
 
         if len(seq_tokens) == 0: return [], []
         seq_log_probs = torch.stack(seq_log_probs, dim=1)  # (B*Q, T)
