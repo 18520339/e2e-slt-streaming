@@ -121,9 +121,9 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             else: # Further levels from previous extra level
                 source = self.input_proj[level](sources[-1])  # (B, d_model, T/4), (B, d_model, T/8), ...
                 base_mask = masks[-1]
-                
-            # Resize mask to new temporal size
-            mask = F.interpolate(base_mask[None].float(), size=source.shape[-1:]).to(torch.bool)
+
+            # Resize mask to new temporal size (1, B, T) -> (1, B, T_l) -> (B, T_l)
+            mask = F.interpolate(base_mask[None].float(), size=source.shape[-1:], mode='nearest')[0].to(torch.bool)
             pos_l = self.position_embeddings(source, mask).to(source.dtype)
             sources.append(source)
             masks.append(mask) # (B, T/2), (B, T/4), ...
@@ -131,7 +131,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
 
         # Prepare encoder inputs (by flattening)
         source_flatten, mask_flatten, lvl_pos_embed_flatten = [], [], []
-        temporal_shapes: List[Tuple[int, int]] = []
+        temporal_shapes: List[int] = []
         for level, (source, mask, pos_embed) in enumerate(zip(sources, masks, position_embeddings_list)):
             batch_size, _, width = source.shape
             temporal_shapes.append(width)
@@ -148,8 +148,9 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         mask_flatten = torch.cat(mask_flatten, 1)                    # (B, \sum{T_l})
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)  # (B, \sum{T_l}, C)
 
-        temporal_shapes = torch.as_tensor(temporal_shapes, dtype=torch.long, device=source_flatten.device)       # (L,)
-        level_start_index = torch.cat((temporal_shapes.new_zeros((1,)), temporal_shapes.prod(1).cumsum(0)[:-1])) # (L,)
+        # 1D temporal shapes and start indices
+        temporal_shapes = torch.as_tensor(temporal_shapes, dtype=torch.long, device=source_flatten.device)  # (L,)
+        level_start_index = torch.cat([temporal_shapes.new_zeros((1,)), temporal_shapes.cumsum(0)[:-1]])     # (L,)
         valid_ratios = torch.stack([torch.sum(m, 1).to(source_flatten.dtype) / m.shape[1] for m in masks], 1)    # (B, L) 
 
         # Send source_flatten + mask_flatten + lvl_pos_embed_flatten (backbone + proj layer output) through encoder
