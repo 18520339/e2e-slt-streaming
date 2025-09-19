@@ -85,7 +85,8 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
 
 
     def forward(
-        self, pixel_values: torch.FloatTensor, pixel_mask: Optional[torch.LongTensor] = None,
+        self, pixel_values: torch.FloatTensor,          # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
+        pixel_mask: Optional[torch.LongTensor] = None,  # (B, T) 1=valid, 0=pad
         labels: Optional[list[dict]] = None, # {'class_labels': LongTensor (N_i, ), 'boxes': FloatTensor (N_i, 2), 'seq_tokens': LongTensor (N_i, L)}
         encoder_outputs: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = None,
@@ -103,7 +104,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
 
         # Send images through DETR base model to obtain encoder + decoder outputs
         transformer_outputs = self.transformer(
-            pixel_values,
+            pixel_values=pixel_values,
             pixel_mask=pixel_mask,
             encoder_outputs=encoder_outputs,
             output_attentions=output_attentions,
@@ -121,8 +122,9 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         outputs_cap_probs, outputs_cap_tokens = [], []
         
         for layer in range(hidden_states.shape[1]):
-            device = device
             layer_hidden_states = hidden_states[:, layer]  # (B, Q, D)
+            B, Q, _ = layer_hidden_states.shape
+            device = layer_hidden_states.device
             
             # Count head: (B, num_queries, num_queries+1) logits for 0 to num_queries events
             # Max is to get the most confident prediction across queries
@@ -147,7 +149,6 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 match_indices = self.loss_function.matcher({'logits': outputs_class, 'pred_boxes': outputs_coords[-1]}, labels)
                 
                 # Align target seq_tokens to query order for teacher forcing (shape: B x Q x L)
-                B, Q, _ = layer_hidden_states.shape
                 max_len = self.caption_head[layer].max_caption_len
                 aligned_tokens = torch.zeros(B, Q, max_len, dtype=torch.long, device=device)
                 
@@ -166,13 +167,11 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                     cap_probs, cap_tokens = self.caption_head[layer].sample(layer_hidden_states, reference, transformer_outputs)
                 else: # For other layers, just append empty tensors
                     cap_probs = torch.zeros(
-                        layer_hidden_states.shape[0], layer_hidden_states.shape[1],
-                        self.caption_head[layer].max_caption_len, self.caption_head[layer].vocab_size + 1,
+                        B, Q, self.caption_head[layer].max_caption_len, self.caption_head[layer].vocab_size + 1, 
                         device=device, dtype=torch.float32
                     )
                     cap_tokens = torch.zeros(
-                        layer_hidden_states.shape[0], layer_hidden_states.shape[1],
-                        self.caption_head[layer].max_caption_len,
+                        B, Q, self.caption_head[layer].max_caption_len, 
                         device=device, dtype=torch.long
                     )
             outputs_cap_probs.append(cap_probs)                 # (B, Q, length, vocab_size + 1)
@@ -194,7 +193,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         if labels is not None: # Training mode
             loss, loss_dict, auxiliary_outputs = self.loss_function(
                 labels, logits, pred_boxes, pred_counts, pred_cap_logits,
-                outputs_counts, outputs_classes, outputs_coords, outputs_cap_probs
+                outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
             )
 
         if not return_dict:
@@ -220,3 +219,71 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             enc_outputs_class=transformer_outputs.enc_outputs_class,
             enc_outputs_coord_logits=transformer_outputs.enc_outputs_coord_logits,
         )
+
+if __name__ == "__main__":
+    # Quick smoke test for forward pass
+    torch.manual_seed(0)
+
+    # Build config with sensible small defaults
+    config = DeformableDetrConfig()
+    config.d_model = 256
+    config.dim_feedforward = 1024
+    config.dropout = 0.1
+    config.activation_function = "relu"
+    config.encoder_layers = 3
+    config.decoder_layers = 3
+    config.encoder_attention_heads = 8
+    config.decoder_attention_heads = 8
+    config.encoder_n_points = 4
+    config.decoder_n_points = 4
+    config.num_queries = 10
+    config.num_feature_levels = 3
+    config.num_labels = 5
+    config.two_stage = False
+    config.with_box_refine = False
+    config.auxiliary_loss = True
+    # Loss-related hyperparams (only used if training)
+    config.focal_alpha = 0.25
+    config.class_cost = 1.0
+    config.bbox_cost = 5.0
+    config.giou_cost = 2.0
+
+    # Instantiate model
+    vocab_size = 1000
+    pad_token_id = 0
+    bos_token_id = vocab_size  # reserve the last id as <BOS>
+    eos_token_id = 2
+
+    model = DeformableDetrForObjectDetection(
+        config=config,
+        vocab_size=vocab_size,
+        bos_token_id=bos_token_id,
+        eos_token_id=eos_token_id,
+        pad_token_id=pad_token_id,
+        rnn_num_layers=1,
+        dropout_rate=0.1,
+        max_caption_len=12
+    ).eval()
+
+    # Random inputs
+    B, T, K = 2, 64, 77
+    pixel_values = torch.randn(B, T, K, 3)  # channel-last as expected by backbone
+    pixel_mask = torch.ones(B, T, dtype=torch.long)
+    # Optionally add padding on the right for half of the batch
+    pixel_mask[0, -8:] = 0
+
+    # Forward (inference mode: labels=None)
+    with torch.no_grad():
+        outputs = model(
+            pixel_values=pixel_values,
+            pixel_mask=pixel_mask,
+            labels=None,
+            return_dict=True
+        )
+
+    # Print key output shapes
+    print("logits:", tuple(outputs.logits.shape))                # (B, Q, num_labels)
+    print("pred_boxes:", tuple(outputs.pred_boxes.shape))        # (B, Q, 2)
+    print("pred_counts:", tuple(outputs.pred_counts.shape))      # (B, Q+1)
+    print("pred_cap_logits:", tuple(outputs.pred_cap_logits.shape))  # (B, Q, L, vocab+1)
+    print("pred_cap_tokens:", tuple(outputs.pred_cap_tokens.shape))  # (B, Q, L)

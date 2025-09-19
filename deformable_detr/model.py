@@ -123,8 +123,8 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
                 base_mask = masks[-1]
 
             # Resize mask to new temporal size (1, B, T) -> (1, B, T_l) -> (B, T_l)
-            mask = F.interpolate(base_mask[None].float(), size=source.shape[-1:], mode='nearest')[0].to(torch.bool)
-            pos_l = self.position_embeddings(source, mask).to(source.dtype)
+            mask = F.interpolate(base_mask[None].float(), size=source.shape[-1:], mode='nearest').to(torch.bool)[0]
+            pos_l = self.position_embeddings(source, mask, durations=torch.sum(mask, 1)).to(source.dtype)
             sources.append(source)
             masks.append(mask) # (B, T/2), (B, T/4), ...
             position_embeddings_list.append(pos_l)

@@ -9,11 +9,11 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
         super().__init__()
         self.config = config
         self.n_levels = config.num_feature_levels
-        self.n_heads = config.decoder_layers
+        self.n_heads = config.decoder_attention_heads 
         self.n_points = config.decoder_n_points
         self.deformable_attn = TemporalMSDA(config, num_heads=self.n_heads, n_points=self.n_points)
 
-        self.attn_feat_dim = int(config.d_model / config.num_heads)
+        self.attn_feat_dim = int(config.d_model / config.decoder_attention_heads)
         self.attn_hidden_dim = config.d_model
         self.attn_dropout = nn.Dropout(0.5)
         self.rnn = nn.LSTM(
@@ -34,11 +34,11 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
         h_last = state[0][-1].view(batch_size, num_queries, -1)
         clip = self.deformable_attn(
             hidden_states=torch.cat((h_last, query), 2),  # concat features
+            attention_mask=transformer_outputs.mask_flatten
+            encoder_hidden_states=transformer_outputs.encoder_last_hidden_state, 
             reference_points=reference_points, 
             temporal_shapes=transformer_outputs.temporal_shapes, 
             level_start_index=transformer_outputs.level_start_index, 
-            encoder_hidden_states=transformer_outputs.encoder_last_hidden_state, 
-            encoder_attention_mask=transformer_outputs.mask_flatten
         )
         clip = clip.reshape(batch_size, self.n_heads, -1, num_queries, self.n_levels * self.n_points).permute(0, 3, 1, 4, 2)
         clip = clip.reshape(batch_size * num_queries, self.n_heads, self.n_levels * self.n_points, self.attn_feat_dim)

@@ -62,9 +62,11 @@ class TemporalMSDA(nn.Module):
         
 
     def forward(
-        self, hidden_states: Tensor, position_embeddings: Optional[Tensor] = None,
+        self, hidden_states: Tensor, 
+        encoder_hidden_states=None, 
+        attention_mask: Optional[torch.Tensor] = None,
+        position_embeddings: Optional[Tensor] = None,
         reference_points=None, temporal_shapes=None, level_start_index=None,
-        encoder_hidden_states=None, encoder_attention_mask: Optional[Tensor] = None,  
     ):
         # Add position embeddings to the hidden states before projecting to queries and keys
         if position_embeddings is not None: hidden_states += position_embeddings
@@ -74,8 +76,8 @@ class TemporalMSDA(nn.Module):
             raise ValueError('Make sure to align the temporal shapes with the sequence length of the encoder hidden states.')
 
         value = self.value_proj(encoder_hidden_states)
-        if encoder_attention_mask is not None: # We invert the encoder_attention_mask
-            value = value.masked_fill(~encoder_attention_mask[..., None], float(0))
+        if attention_mask is not None: # We invert the attention_mask
+            value = value.masked_fill(~attention_mask[..., None], float(0))
             
         value = value.view(batch_size, sequence_length, self.n_heads, self.d_model // self.n_heads)
         sampling_offsets = self.sampling_offsets(hidden_states).view(batch_size, num_queries, self.n_heads, self.n_levels, self.n_points)

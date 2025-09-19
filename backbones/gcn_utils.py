@@ -113,7 +113,7 @@ class Graph:
                     
             A = np.stack(A)
             self.A = A
-        raise ValueError('Do Not Exist This Strategy')
+        else: raise ValueError('Do Not Exist This Strategy')
 
 
 def get_hop_distance(num_node, edge, max_hop=1):
