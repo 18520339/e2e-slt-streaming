@@ -16,7 +16,6 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
 from deformable_detr import DeformableDetrModel
 from captioner import DeformableCaptioner
 from loss import DeformableDetrForObjectDetectionLoss
-from loss import DeformableDetrHungarianMatcher
 from utils import ensure_cw_format
 
 
@@ -202,7 +201,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         return PDVCOutput(
             loss=loss, loss_dict=loss_dict, logits=logits, 
             pred_boxes=pred_boxes, pred_counts=pred_counts,
-            pred_cap_logits=pred_cap_logits, pred_tokens=pred_cap_tokens,
+            pred_cap_logits=pred_cap_logits, pred_cap_tokens=pred_cap_tokens,
             auxiliary_outputs=auxiliary_outputs,
             last_hidden_state=transformer_outputs.last_hidden_state,
             decoder_hidden_states=transformer_outputs.decoder_hidden_states,
