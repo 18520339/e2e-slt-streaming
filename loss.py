@@ -263,7 +263,7 @@ class DeformableDetrForObjectDetectionLoss(nn.Module):
             outputs['auxiliary_outputs'] = self.auxiliary_outputs
             aux_weight_dict = {}
             for layer in range(self.config.decoder_layers - 1):
-                aux_weight_dict.update({f'{k}_{layer}': v for k, v in weight_dict.items()})
+                aux_weight_dict.update({f'{k}_{layer}': v for k, v in self.weight_dict.items()})
             self.weight_dict.update(aux_weight_dict) # Weights for each decoder layer
         
         loss_dict, last_indices, auxiliary_indices = self.criterion(outputs, labels) # Compute the losses, based on outputs and labels

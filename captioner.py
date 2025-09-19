@@ -134,11 +134,7 @@ class DeformableCaptioner(nn.Module):
                 token = token.detach()
 
             if i >= 1 and seq_tokens[:, i].data.sum() == 0: break # Break if all sequences end
-            output, state = self.get_log_probs_state(
-                token, state, decoder_hidden_states, 
-                reference_points, temporal_shapes, level_start_index, 
-                encoder_last_hidden_states, encoder_attention_mask
-            )
+            output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
             outputs.append(output) # (B*Q, vocab_size + 1)
         outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1) # (B*Q, Length, vocab_size + 1)
         return outputs.view(batch_size, num_queries, outputs.size(1), -1) 
