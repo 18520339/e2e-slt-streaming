@@ -42,7 +42,7 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
             reference_points=reference_points, 
             temporal_shapes=transformer_outputs.temporal_shapes, 
             level_start_index=transformer_outputs.level_start_index, 
-        ) # (B, Q, D)
+        )
         hidden_states = hidden_states.reshape(batch_size, self.n_heads, -1, num_queries, self.n_levels * self.n_points).permute(0, 3, 1, 4, 2)
         hidden_states = hidden_states.reshape(batch_size * num_queries, self.n_heads, self.n_levels * self.n_points, self.attn_feat_dim)
         attn_size = self.n_levels * self.n_points
@@ -99,7 +99,6 @@ class DeformableCaptioner(nn.Module):
         weight = next(self.deformable_rnn.rnn.parameters()).data
         batch_size = reference_points.shape[0]
         num_events = batch_size * num_queries
-        device = reference_points.device
         state = ( # state is a tuple of (h0, c0)
             weight.new_zeros(self.rnn_num_layers, num_events, self.config.d_model),
             weight.new_zeros(self.rnn_num_layers, num_events, self.config.d_model)

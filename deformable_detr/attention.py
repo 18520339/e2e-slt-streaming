@@ -1,13 +1,61 @@
 import math
 import warnings
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
-
-from typing import Optional
 from transformers import DeformableDetrConfig
-from transformers.models.deformable_detr.modeling_deformable_detr import MultiScaleDeformableAttention
+from transformers.integrations import use_kernel_forward_from_hub
+
+
+@use_kernel_forward_from_hub('MultiScaleDeformableAttention')
+class MultiScaleDeformableAttention(nn.Module):
+    def forward(
+        self, value: Tensor,
+        temporal_shapes: list[int],
+        level_start_index: Tensor,
+        sampling_locations: Tensor,
+        attention_weights: Tensor,
+        im2col_step: int,
+        return_value: bool = False,
+    ):
+        batch_size, _, num_heads, hidden_dim = value.shape
+        _, num_queries, num_heads, num_levels, num_points, _ = sampling_locations.shape
+        value_list = value.split([height * width for height, width in temporal_shapes], dim=1)
+        sampling_grids = 2 * sampling_locations - 1
+        sampling_value_list = []
+        
+        for level_id, (height, width) in enumerate(temporal_shapes):
+            # batch_size, height*width, num_heads, hidden_dim
+            # -> batch_size, height*width, num_heads*hidden_dim
+            # -> batch_size, num_heads*hidden_dim, height*width
+            # -> batch_size*num_heads, hidden_dim, height, width
+            value_l_ = value_list[level_id].flatten(2).transpose(1, 2).reshape(batch_size * num_heads, hidden_dim, height, width)
+
+            # batch_size, num_queries, num_heads, num_points, 2
+            # -> batch_size, num_heads, num_queries, num_points, 2
+            # -> batch_size*num_heads, num_queries, num_points, 2
+            sampling_grid_l_ = sampling_grids[:, :, :, level_id].transpose(1, 2).flatten(0, 1)
+            
+            # batch_size*num_heads, hidden_dim, num_queries, num_points
+            sampling_value_l_ = nn.functional.grid_sample(
+                value_l_, sampling_grid_l_,
+                mode='bilinear', padding_mode='zeros', align_corners=False,
+            )
+            sampling_value_list.append(sampling_value_l_)
+            
+        # (batch_size, num_queries, num_heads, num_levels, num_points)
+        # -> (batch_size, num_heads, num_queries, num_levels, num_points)
+        # -> (batch_size, num_heads, 1, num_queries, num_levels*num_points)
+        attention_weights = attention_weights.transpose(1, 2).reshape(
+            batch_size * num_heads, 1, 
+            num_queries, num_levels * num_points
+        )
+        if return_value: return torch.stack(sampling_value_list, dim=-2)
+        return (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights) \
+            .sum(-1).view(batch_size, num_heads * hidden_dim, num_queries) \
+            .transpose(1, 2).contiguous()
 
 
 class TemporalMSDA(nn.Module):
@@ -30,16 +78,17 @@ class TemporalMSDA(nn.Module):
         self.n_levels = config.num_feature_levels
         self.n_heads = num_heads if num_heads else config.encoder_attention_heads
         self.n_points = n_points if n_points else config.encoder_n_points
+        self.is_captioning = is_captioning
 
-        if is_captioning: # In captioner, we concatenate the concat prev_h and query, so the input dim is 2 * d_model
+        if self.is_captioning: # In captioner, we concatenate the concat prev_h and query, so the input dim is 2 * d_model
             self.sampling_offsets  = nn.Linear(self.d_model * 2, self.n_heads * self.n_levels * self.n_points)
             self.attention_weights = nn.Linear(self.d_model * 2, self.n_heads * self.n_levels * self.n_points)
         else:
             self.sampling_offsets  = nn.Linear(self.d_model, self.n_heads * self.n_levels * self.n_points)
             self.attention_weights = nn.Linear(self.d_model, self.n_heads * self.n_levels * self.n_points)
-        
-        self.value_proj  = nn.Linear(self.d_model, self.d_model)
-        self.output_proj = nn.Linear(self.d_model, self.d_model)
+            self.output_proj = nn.Linear(self.d_model, self.d_model)
+
+        self.value_proj = nn.Linear(self.d_model, self.d_model)
         self.disable_custom_kernels = config.disable_custom_kernels
         self._reset_parameters()
         
@@ -62,8 +111,9 @@ class TemporalMSDA(nn.Module):
         nn.init.constant_(self.attention_weights.bias.data, 0.0)
         nn.init.xavier_uniform_(self.value_proj.weight.data)
         nn.init.constant_(self.value_proj.bias.data, 0.0)
-        nn.init.xavier_uniform_(self.output_proj.weight.data)
-        nn.init.constant_(self.output_proj.bias.data, 0.0)
+        if not self.is_captioning:
+            nn.init.xavier_uniform_(self.output_proj.weight.data)
+            nn.init.constant_(self.output_proj.bias.data, 0.0)
         
 
     def forward(
@@ -101,13 +151,14 @@ class TemporalMSDA(nn.Module):
         # Similarly, the H dimension in temporal_shapes is always 1 for temporal data
         sampling_locations = torch.stack((sampling_locations, 0.5 * sampling_locations.new_ones(sampling_locations.shape)), -1)
         temporal_shapes = torch.stack([temporal_shapes.new_ones(temporal_shapes.shape), temporal_shapes], -1)
-        output = self.output_proj(self.attn(
+        output = self.attn(
             value,
-            None, # The `value_spatial_shapes` arg here does nothing in HF implementation, so I set it to None
-            temporal_shapes, # and use this arg as both spatial_shapes and spatial_shapes_list
+            temporal_shapes,
             level_start_index,
             sampling_locations,
             attention_weights,
             self.im2col_step,
-        )) # (B, num_queries, d_model)
+            return_value=self.is_captioning
+        )
+        if not self.is_captioning: output = self.output_proj(output) # Only apply output projection when not in captioner
         return output, attention_weights
