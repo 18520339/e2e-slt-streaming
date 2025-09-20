@@ -1,35 +1,34 @@
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor, FloatTensor
+from dataclasses import dataclass
 from typing import Union, List, Optional, Tuple
 from transformers import DeformableDetrConfig
-from transformers.models.deformable_detr.modeling_deformable_detr import (
-    DeformableDetrPreTrainedModel, 
-    DeformableDetrModelOutput, BaseModelOutput
-)
+from transformers.models.deformable_detr.modeling_deformable_detr import BaseModelOutput, ModelOutput, DeformableDetrPreTrainedModel
 from backbones import CoSign1s
 from .position_encoding import PositionEmbeddingSine
 from .encoder import DeformableDetrEncoder
 from .decoder import DeformableDetrDecoder
 
 
-class PDVCTransformerOutput(DeformableDetrModelOutput):
+@dataclass
+class PDVCTransformerOutput(ModelOutput):
+    init_reference_points: Optional[torch.FloatTensor] = None
+    last_hidden_state: Optional[torch.FloatTensor] = None
+    intermediate_hidden_states: Optional[torch.FloatTensor] = None
+    intermediate_reference_points: Optional[torch.FloatTensor] = None
+    decoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
+    decoder_attentions: Optional[tuple[torch.FloatTensor]] = None
+    cross_attentions: Optional[tuple[torch.FloatTensor]] = None
+    encoder_last_hidden_state: Optional[torch.FloatTensor] = None
+    encoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
+    encoder_attentions: Optional[tuple[torch.FloatTensor]] = None
+    enc_outputs_class: Optional[torch.FloatTensor] = None
+    enc_outputs_coord_logits: Optional[torch.FloatTensor] = None
     mask_flatten: Optional[FloatTensor] = None
     temporal_shapes: Optional[FloatTensor] = None
     level_start_index: Optional[FloatTensor] = None
     valid_ratios: Optional[FloatTensor] = None
-    
-
-# Copied from transformers.models.detr.modeling_detr.DetrConvModel with Detr->DeformableDetr
-    def forward(self, pixel_values, pixel_mask):
-        # send pixel_values and pixel_mask through backbone to get list of (feature_map, pixel_mask) tuples
-        out = self.conv_encoder(pixel_values, pixel_mask)
-        pos = []
-        for feature_map, mask in out:
-            # position encoding
-            pos.append(self.position_embedding(feature_map, mask).to(feature_map.dtype))
-
-        return out, pos
     
 
 class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D features
@@ -108,7 +107,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         
         pos_level0 = self.position_embeddings(pixel_values, pixel_mask, durations=torch.sum(pixel_mask, 1)) # (B, d_model, T)
         source_level0 = self.input_proj[0](pixel_values) # (B, d_model, T)
-        mask_level0 = pixel_mask                         # (B, T) 1=valid, 0=pad
+        mask_level0 = pixel_mask.to(torch.bool)          # (B, T) 1=valid, 0=pad
         sources, masks, position_embeddings_list = [source_level0], [mask_level0], [pos_level0]
         if pixel_mask is None: raise ValueError('No attention mask was provided')
 

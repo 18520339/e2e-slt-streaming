@@ -9,13 +9,12 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
         super().__init__()
         self.config = config
         self.n_levels = config.num_feature_levels
-        self.n_heads = config.decoder_attention_heads 
+        self.n_heads  = config.decoder_attention_heads 
         self.n_points = config.decoder_n_points
-        self.deformable_attn = TemporalMSDA(config, num_heads=self.n_heads, n_points=self.n_points)
-
-        self.attn_feat_dim = int(config.d_model / config.decoder_attention_heads)
+        self.deformable_attn = TemporalMSDA(config, num_heads=self.n_heads, n_points=self.n_points, is_captioning=True)
+        self.attn_feat_dim   = int(config.d_model / config.decoder_attention_heads)
         self.attn_hidden_dim = config.d_model
-        self.attn_dropout = nn.Dropout(0.5)
+        self.attn_dropout    = nn.Dropout(dropout_rate)
         self.rnn = nn.LSTM(
             input_size=config.d_model * 3,  # Input: word_embed + attn_feat
             hidden_size=config.d_model, 
@@ -30,43 +29,48 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
     def forward(self, token, state, query, reference_points, transformer_outputs):
         batch_size, num_queries, n_levels, _ = reference_points.shape
 
-        # Use (B, Q, C) for deformable attention; concat previous h with query along feature dim
-        h_last = state[0][-1].view(batch_size, num_queries, -1)
-        clip = self.deformable_attn(
-            hidden_states=torch.cat((h_last, query), 2),  # concat features
-            attention_mask=transformer_outputs.mask_flatten
+        # Use the last LSTM layer hidden state; maintain both (B,Q,D) and (B*Q,D) views
+        h_last = state[0][-1]                                 # (B*Q, D)
+        prev_h = h_last.view(batch_size, num_queries, -1)     # (B, Q, D)
+        prev_h_bq = h_last                                    # (B*Q, D)
+
+        # Deformable attention with concatenated features along last dim
+        hidden_states, attn_weights = self.deformable_attn(
+            hidden_states=torch.cat((prev_h, query), 2),  # (B, Q, 2*D)
+            attention_mask=transformer_outputs.mask_flatten,
             encoder_hidden_states=transformer_outputs.encoder_last_hidden_state, 
             reference_points=reference_points, 
             temporal_shapes=transformer_outputs.temporal_shapes, 
             level_start_index=transformer_outputs.level_start_index, 
-        )
-        clip = clip.reshape(batch_size, self.n_heads, -1, num_queries, self.n_levels * self.n_points).permute(0, 3, 1, 4, 2)
-        clip = clip.reshape(batch_size * num_queries, self.n_heads, self.n_levels * self.n_points, self.attn_feat_dim)
+        ) # (B, Q, D)
+        hidden_states = hidden_states.reshape(batch_size, self.n_heads, -1, num_queries, self.n_levels * self.n_points).permute(0, 3, 1, 4, 2)
+        hidden_states = hidden_states.reshape(batch_size * num_queries, self.n_heads, self.n_levels * self.n_points, self.attn_feat_dim)
         attn_size = self.n_levels * self.n_points
 
-        attn = self.ctx2attn(clip)                                          # (B*Q, H, A, attn_hidden_dim)
-        attn = attn.view(-1, self.n_heads, attn_size, self.attn_hidden_dim) # (B*Q, H, A, attn_hidden_dim)
-        attn_h = self.hs2attn(state[0][-1])                                 # (B*Q, attn_hidden_dim)
-        attn_h = attn_h.unsqueeze(1).unsqueeze(1).expand_as(attn)           # (B*Q, H, A, attn_hidden_dim)
-        dot = torch.tanh(attn + attn_h)                                     # (B*Q, H, A, attn_hidden_dim)
-        dot = dot.view(-1, self.attn_hidden_dim)                            # (B*Q*H*A, attn_hidden_dim)
-        dot = self.alpha_net(dot).view(-1, attn_size)                       # (B*Q, A)
+        attn = self.ctx2attn(hidden_states)                                    # (B*Q, H, A, attn_hidden_dim)
+        attn = attn.view(-1, self.n_heads, attn_size, self.attn_hidden_dim)    # (B*Q, H, A, attn_hidden_dim)
+        attn_h = self.hs2attn(prev_h_bq)                                       # (B*Q, attn_hidden_dim)
+        attn_h = attn_h.unsqueeze(1).unsqueeze(1).expand_as(attn)              # (B*Q, H, A, attn_hidden_dim)
+        dot = torch.tanh(attn + attn_h)                                        # (B*Q, H, A, attn_hidden_dim)
+        dot = dot.view(-1, self.attn_hidden_dim)                               # (B*Q*H*A, attn_hidden_dim)
+        dot = self.alpha_net(dot).view(-1, attn_size)                          # (B*Q*H, A)
 
         weight = F.softmax(dot, dim=1)
-        attn_feats_ = clip.reshape(-1, attn_size, self.attn_feat_dim)       # (B*Q, A, attn_feat_dim)
-        attn_res = torch.bmm(weight.unsqueeze(1), attn_feats_).squeeze(1)   # (B*Q, attn_feat_dim)
-        attn_res = attn_res.reshape(batch_size * num_queries, self.n_heads, self.attn_feat_dim).flatten(1)
+        attn_feats_ = hidden_states.reshape(-1, attn_size, self.attn_feat_dim) # (B*Q*H, A, attn_feat_dim)
+        attn_res = torch.bmm(weight.unsqueeze(1), attn_feats_).squeeze(1)      # (B*Q*H, attn_feat_dim)
+        attn_res = attn_res.reshape(batch_size * num_queries, self.n_heads, self.attn_feat_dim).flatten(1)  # (B*Q, D)
 
         # Flatten query for LSTM input
-        query_flat = query.reshape(1, batch_size * num_queries, -1)         # (1, B*Q, C)
-        input_feats = torch.cat((attn_res.unsqueeze(0), query_flat), 2)     # (1, B*Q, 2*C)
-        output, state = self.rnn(torch.cat([token.unsqueeze(0), input_feats], 2), state)
-        return output.squeeze(0), state # (B*Q, d_model)
+        query_flat = query.reshape(1, batch_size * num_queries, -1)                       # (1, B*Q, D)
+        input_feats = torch.cat((attn_res.unsqueeze(0), query_flat), 2)                   # (1, B*Q, 2*D)
+        output, state = self.rnn(torch.cat([token.unsqueeze(0), input_feats], 2), state)  # (1, B*Q, 3*D)
+        return output.squeeze(0), state # (B*Q, D)
 
 
 class DeformableCaptioner(nn.Module):
     def __init__(
-        self, config, vocab_size, bos_token_id, eos_token_id, pad_token_id,
+        self, config, vocab_size, 
+        bos_token_id, eos_token_id, pad_token_id,
         rnn_num_layers, dropout_rate, max_caption_len
     ):
         super().__init__()
@@ -96,7 +100,7 @@ class DeformableCaptioner(nn.Module):
         batch_size = reference_points.shape[0]
         num_events = batch_size * num_queries
         device = reference_points.device
-        state = ( # (h0, c0)
+        state = ( # state is a tuple of (h0, c0)
             weight.new_zeros(self.rnn_num_layers, num_events, self.config.d_model),
             weight.new_zeros(self.rnn_num_layers, num_events, self.config.d_model)
         )
@@ -154,8 +158,8 @@ class DeformableCaptioner(nn.Module):
         num_events = batch_size * num_queries
         
         seq_log_probs, seq_tokens = [], []
-        token = torch.full((num_events,), self.bos_token_id, dtype=torch.long) # Initialize with <BOS> for all events (B*Q)
-        done = torch.zeros_like(token).bool()
+        token = torch.full((num_events,), self.bos_token_id, dtype=torch.long) # # Initialize with <BOS> for all events (B*Q)
+        done = torch.zeros_like(token, dtype=torch.bool)  # (B*Q,)
 
         for t in range(self.max_caption_len):
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)

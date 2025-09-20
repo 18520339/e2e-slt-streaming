@@ -11,7 +11,7 @@ from transformers.models.deformable_detr.modeling_deformable_detr import MultiSc
 
 
 class TemporalMSDA(nn.Module):
-    def __init__(self, config: DeformableDetrConfig, num_heads: int, n_points: int):
+    def __init__(self, config: DeformableDetrConfig, num_heads, n_points, is_captioning=False):
         super().__init__()
         self.attn = MultiScaleDeformableAttention()
 
@@ -28,13 +28,18 @@ class TemporalMSDA(nn.Module):
         self.im2col_step = 64
         self.d_model = config.d_model
         self.n_levels = config.num_feature_levels
-        self.n_heads = num_heads
-        self.n_points = n_points
+        self.n_heads = num_heads if num_heads else config.encoder_attention_heads
+        self.n_points = n_points if n_points else config.encoder_n_points
 
-        self.sampling_offsets  = nn.Linear(config.d_model, num_heads * self.n_levels * n_points)
-        self.attention_weights = nn.Linear(config.d_model, num_heads * self.n_levels * n_points)
-        self.value_proj  = nn.Linear(config.d_model, config.d_model)
-        self.output_proj = nn.Linear(config.d_model, config.d_model)
+        if is_captioning: # In captioner, we concatenate the concat prev_h and query, so the input dim is 2 * d_model
+            self.sampling_offsets  = nn.Linear(self.d_model * 2, self.n_heads * self.n_levels * self.n_points)
+            self.attention_weights = nn.Linear(self.d_model * 2, self.n_heads * self.n_levels * self.n_points)
+        else:
+            self.sampling_offsets  = nn.Linear(self.d_model, self.n_heads * self.n_levels * self.n_points)
+            self.attention_weights = nn.Linear(self.d_model, self.n_heads * self.n_levels * self.n_points)
+        
+        self.value_proj  = nn.Linear(self.d_model, self.d_model)
+        self.output_proj = nn.Linear(self.d_model, self.d_model)
         self.disable_custom_kernels = config.disable_custom_kernels
         self._reset_parameters()
         
@@ -86,9 +91,10 @@ class TemporalMSDA(nn.Module):
         
         sampling_locations = reference_points[:, :, None, :, None, 0] # (batch_size, num_queries, 1, n_levels, 1)
         if reference_points.shape[-1] == 1:
-            sampling_locations += sampling_offsets / temporal_shapes[None, None, None, :, None]
+            # sampling_locations += sampling_offsets / temporal_shapes[None, None, None, :, None] # Broadcasting will be wrong if doing this
+            sampling_locations = sampling_locations + sampling_offsets / temporal_shapes[None, None, None, :, None]
         elif reference_points.shape[-1] == 2:
-            sampling_locations += sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 1] * 0.5
+            sampling_locations = sampling_locations + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 1] * 0.5
         else: raise ValueError(f'Last dim of reference_points must be 1 or 2, but got {reference_points.shape[-1]}')
 
         # For 1D temporal data, we set the 'height' dimension to be always 0.5 (the middle of the only row)
@@ -103,5 +109,5 @@ class TemporalMSDA(nn.Module):
             sampling_locations,
             attention_weights,
             self.im2col_step,
-        ))
+        )) # (B, num_queries, d_model)
         return output, attention_weights
