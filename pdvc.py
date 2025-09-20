@@ -236,16 +236,21 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
 
 
 if __name__ == '__main__':
-    import random
-    torch.manual_seed(0)
+    from loader import get_loader
+    from transformers import AutoTokenizer
 
-    num_queries = 4
-    num_classes = 6
-    vocab_size = 50
+    # Fetch 1 batch from Data loader
     max_caption_len = 12
-    pad_token_id, bos_token_id, eos_token_id = 0, 1, 2
+    tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base', use_fast=True)
+    train_loader = get_loader(split='train', batch_size=4, tokenizer=tokenizer, max_caption_len=max_caption_len)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    batch = next(iter(train_loader))
+    pixel_values = batch['pixel_values'].to(device)
+    pixel_mask = batch['pixel_mask'].to(device)
+    labels = [{k: v.to(device) for k, v in label.items()} for label in batch['labels']]
+    
+    # Model config
     config = DeformableDetrConfig(
         d_model=256,
         encoder_layers=3,
@@ -255,8 +260,8 @@ if __name__ == '__main__':
         encoder_n_points=4,
         decoder_n_points=4,
         num_feature_levels=3,
-        num_queries=num_queries,
-        num_labels=num_classes,
+        num_queries=4,
+        num_labels=1,  # Single foreground class for caption
         auxiliary_loss=True,
         # Loss hyper-params used by our PDVC loss
         class_cost=1.0,
@@ -266,50 +271,18 @@ if __name__ == '__main__':
     )
     model = DeformableDetrForObjectDetection(
         config=config,
-        vocab_size=vocab_size,
-        bos_token_id=bos_token_id,
-        eos_token_id=eos_token_id,
-        pad_token_id=pad_token_id,
+        vocab_size=tokenizer.vocab_size,
+        bos_token_id=tokenizer.bos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id,
         rnn_num_layers=1,
         cap_dropout_rate=0.1,
         max_caption_len=max_caption_len,
     ).to(device)
+    model.loss_function = DeformableDetrForObjectDetectionLoss(config, pad_token_id=tokenizer.pad_token_id)
+
+    # Test Training and Inference step
     model.train()
-
-    # Random inputs
-    B, T, K = 2, 16, 77  # (B, T, K, 3) as expected by the CoSign backbone
-    pixel_values = torch.randn(B, T, K, 3, device=device)
-    pixel_mask = torch.ones(B, T, dtype=torch.long, device=device)
-
-    # Random labels
-    def rand_boxes(n: int): # Sample widths and centers so that start>=0 and end<=1
-        w = torch.empty(n).uniform_(0.05, 0.30)
-        c = torch.empty(n)
-        for i in range(n):
-            c[i] = random.uniform(w[i].item() / 2, 1.0 - w[i].item() / 2)
-        return torch.stack([c, w], dim=1)
-
-    def rand_seq_tokens(n: int, max_len: int): # BOS + tokens + EOS + PAD
-        tokens = torch.full((n, max_len), pad_token_id, dtype=torch.long)
-        for i in range(n):
-            L = random.randint(5, max_len)  # ensure some length
-            tokens[i, 0] = bos_token_id
-            if L > 1:
-                tokens[i, 1 : L - 1] = torch.randint(3, vocab_size + 1, (L - 2,), dtype=torch.long)
-                tokens[i, L - 1] = eos_token_id
-        return tokens
-
-    labels = []
-    for b in range(B):
-        n = random.randint(1, num_queries)  # a few events per sample
-        labels.append({
-            "class_labels": torch.randint(0, num_classes, (n,), device=device),
-            "boxes": rand_boxes(n).to(device),  # (center, width) in [0,1]
-            "seq_tokens": rand_seq_tokens(n, max_caption_len).to(device),
-        })
-
-    # Test training step
-    model.loss_function = DeformableDetrForObjectDetectionLoss(config, pad_token_id=pad_token_id) 
     with torch.enable_grad():
         out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, labels=labels, return_dict=True)
         print('--- Training step ---')
@@ -321,7 +294,6 @@ if __name__ == '__main__':
         print('- pred_cap_tokens:', out.pred_cap_tokens.shape)
         out.loss.backward()
         
-    # Test inference step
     model.eval()
     with torch.no_grad():
         out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, return_dict=True)

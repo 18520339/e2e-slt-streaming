@@ -249,7 +249,6 @@ def collate_fn(batch):
     Fixed window_size, so no padding needed for poses.
     '''
     video_ids, window_start_frames, window_end_frames, poses_tensor, labels = zip(*batch)
-    # Ensure same T across batch to stack
     T = poses_tensor[0].shape[0]
     assert all(p.shape[0] == T for p in poses_tensor), 'Variable T in batch; use batch_size=1 or add padding.'
     return {
