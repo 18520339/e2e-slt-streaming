@@ -10,7 +10,8 @@ from config import *
 
 
 class DVCDataset(Dataset):
-    def __init__(self, split, stride_ratio=0.5, max_caption_len=20, max_tries=10, min_sentences=1, tokenizer=None, seed=42):
+    def __init__(self, split, stride_ratio=0.5, max_caption_len=20, max_tries=10, 
+                 min_sentences=1, tokenizer=None, load_by='window', seed=42):
         '''
         PyTorch Dataset for DVC with on-the-fly sliding window sampling.
         Args:
@@ -20,6 +21,9 @@ class DVCDataset(Dataset):
             max_tries: Max resamples for train windows with < min_sentences
             min_sentences: Min full sentences per train window
             tokenizer: HuggingFace tokenizer for text processing
+            load_by: 'window' (default) or 'video' - whether to
+                     load poses per window and concatenate or 
+                     load full video poses at once and slice
             seed: For reproducibility in random sampling
         '''
         assert split in ['train', 'val', 'test'], f"Split must be 'train', 'val', or 'test', but got {split}"
@@ -29,6 +33,8 @@ class DVCDataset(Dataset):
         self.max_caption_len = max_caption_len
         self.max_tries = max_tries
         self.min_sentences = min_sentences
+        self.load_by = load_by
+        assert self.load_by in ['window', 'video'], "load_by must be 'window' or 'video'"
         np.random.seed(seed)
 
         self.tokenizer = tokenizer
@@ -144,12 +150,12 @@ class DVCDataset(Dataset):
             
 
     def _get_window_data(self, video_id, window_start_frame, window_end_frame):
-        if window_start_frame >= window_end_frame:
-            raise ValueError('Invalid window boundaries')
-
-        # full_poses = self.load_poses_for_video(video_id)
-        # window_poses = full_poses[window_start_frame:window_end_frame, :, :]
-        window_poses = self.load_poses_for_window(video_id, window_start_frame, window_end_frame)
+        if window_start_frame >= window_end_frame: raise ValueError('Invalid window boundaries')
+        if self.load_by == 'video': # Load full video poses at once and slice
+            full_poses = self.load_poses_for_video(video_id)
+            window_poses = full_poses[window_start_frame:window_end_frame, :, :]
+        elif self.load_by == 'window': # Load only the necessary segments for this window and concatenate
+            window_poses = self.load_poses_for_window(video_id, window_start_frame, window_end_frame)
         
         # Preprocess poses: Normalize and threshold
         window_poses = normalize_keypoints(window_poses)
@@ -256,7 +262,8 @@ def collate_fn(batch):
     }
     
 
-def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=20, max_tries=10, min_sentences=1, tokenizer=None, seed=42):
+def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=20, 
+               max_tries=10, min_sentences=1, tokenizer=None, load_by='window', seed=42):
     dataset = DVCDataset( # Create a data loader for a specific split
         split=split, stride_ratio=stride_ratio, max_caption_len=max_caption_len, 
         max_tries=max_tries, min_sentences=min_sentences, tokenizer=tokenizer, seed=seed
