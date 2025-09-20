@@ -17,9 +17,8 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
         self.attn_dropout    = nn.Dropout(dropout_rate)
         self.rnn = nn.LSTM(
             input_size=config.d_model * 3,  # Input: word_embed + attn_feat
-            hidden_size=config.d_model, 
-            num_layers=rnn_num_layers, 
-            dropout=dropout_rate, bias=False
+            hidden_size=config.d_model, num_layers=rnn_num_layers, bias=False,
+            dropout=dropout_rate if rnn_num_layers > 1 else 0 # Non-zero dropout expects num_layers greater than 1
         )
         self.ctx2attn = nn.Linear(self.attn_feat_dim, self.attn_hidden_dim)
         self.hs2attn = nn.Linear(config.d_model, self.attn_hidden_dim)
