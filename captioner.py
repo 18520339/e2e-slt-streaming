@@ -139,7 +139,7 @@ class DeformableCaptioner(nn.Module):
                     prob_prev = torch.exp(outputs[-1].data) # N x (V + 1)
                     token.index_copy_(
                         dim=0, index=sample_idx,
-                        tensor=torch.multinomial(prob_prev, 1).view(-1).index_select(0, sample_idx)
+                        source=torch.multinomial(prob_prev, 1).view(-1).index_select(0, sample_idx)
                     )
                 token = token.detach()
 

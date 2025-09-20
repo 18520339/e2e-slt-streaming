@@ -177,18 +177,17 @@ class PDVCLoss(ImageLoss):
         if 'pred_cap_logits' not in outputs: raise KeyError('No caption logits found in outputs')
         idx = self._get_source_permutation_idx(indices)
         
-        source_logits = outputs['pred_cap_logits'][idx]  # [batch_size, num_matched, max_len - 1, vocab_size + 1]
-        target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size, num_matched, max_len]
-        target_tokens = target_tokens[:, :, 1:source_logits.shape[2] + 1]  # Remove the start token for targets
-        target_masks = (target_tokens != self.pad_token_id).long()         # [batch_size, num_matched, max_len - 1]
-        target_masks = target_masks.view(-1, target_masks.shape[-1])       # [batch_size * num_matched, max_len - 1]
+        source_logits = outputs['pred_cap_logits'][idx]  # [batch_size * num_matched, max_len - 1, vocab_size + 1]
+        target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size * num_matched, max_len]
+        target_tokens = target_tokens[:, 1:source_logits.shape[2]]  # Remove the start token for targets
+        target_masks = (target_tokens != self.pad_token_id).long()  # [batch_size * num_matched, max_len - 1]
         
         loss_caption = F.cross_entropy(
-            source_logits.reshape(-1, source_logits.shape[-1]), # [batch_size * num_matched * (max_len - 1), vocab_size + 1]
-            target_tokens.reshape(-1),                          # [batch_size * num_matched * (max_len - 1)]
+            source_logits.reshape(-1, source_logits.shape[-1]),     # [batch_size * num_matched * (max_len - 1), vocab_size + 1]
+            target_tokens.reshape(-1),                              # [batch_size * num_matched * (max_len - 1)]
             ignore_index=self.pad_token_id, 
             reduction='none'
-        ).view(target_masks.shape)                              # [batch_size * num_matched, max_len - 1]
+        ).view(target_masks.shape)                                  # [batch_size * num_matched, max_len - 1]
         
         loss_caption = (loss_caption * target_masks).sum() / target_masks.sum().clamp(min=1)
         return {'loss_caption': loss_caption}
@@ -238,7 +237,7 @@ class PDVCLoss(ImageLoss):
         return losses, last_indices, auxiliary_indices
         
         
-class DeformableDetrForObjectDetectionLoss(nn.Module):
+class DeformableDetrForObjectDetectionLoss:
     def __init__(
         self, config, pad_token_id=0,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
@@ -263,8 +262,8 @@ class DeformableDetrForObjectDetectionLoss(nn.Module):
             {'logits': a, 'pred_boxes': b, 'pred_counts': c, 'pred_cap_logits': d}
             for a, b, c, d in zip(outputs_classes[:-1], outputs_coords[:-1], outputs_counts[:-1], outputs_cap_probs[:-1])
         ]
-        
-    def forward(
+
+    def __call__(
         self, labels, logits, pred_boxes, pred_counts, pred_cap_logits, 
         outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
     ):
