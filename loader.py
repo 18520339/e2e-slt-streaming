@@ -11,15 +11,15 @@ from config import *
 
 class DVCDataset(Dataset):
     def __init__(self, split, stride_ratio=0.5, max_caption_len=20, max_tries=10, 
-                 min_sentences=1, tokenizer=None, load_by='window', seed=42):
+                 min_events=1, tokenizer=None, load_by='window', seed=42):
         '''
         PyTorch Dataset for DVC with on-the-fly sliding window sampling.
         Args:
             split: 'train', 'val', or 'test'
             stride_ratio: For val/test sequential sampling (e.g., 0.5 for 50% overlap)
             max_caption_len: Max caption token length for padding/truncation
-            max_tries: Max resamples for train windows with < min_sentences
-            min_sentences: Min full sentences per train window
+            max_tries: Max resamples for train windows with < min_events
+            min_events: Min full events (subtitles) in a window
             tokenizer: HuggingFace tokenizer for text processing
             load_by: 'window' (default) or 'video' - whether to
                      load poses per window and concatenate or 
@@ -32,7 +32,7 @@ class DVCDataset(Dataset):
         self.stride = int(self.window_size_frames * stride_ratio)
         self.max_caption_len = max_caption_len
         self.max_tries = max_tries
-        self.min_sentences = min_sentences
+        self.min_events = min_events
         self.load_by = load_by
         assert self.load_by in ['window', 'video'], "load_by must be 'window' or 'video'"
         np.random.seed(seed)
@@ -86,7 +86,17 @@ class DVCDataset(Dataset):
             if self.split != 'train': # For val/test: count fixed, overlapping windows
                 for window_start_frame in range(0, total_frames, self.stride):
                     window_end_frame = window_start_frame + self.window_size_frames
+                    
                     if window_end_frame <= total_frames: # Ignore the last, smaller window if it's too short
+                        valid_events_count = 0 # Count valid events fully contained in a window (used for val filtering)
+                        for sub in self.video_metadata[video_id]['subtitles']:
+                            sub_start_frame = int(sub['start'] * FPS)
+                            sub_end_frame = int(sub['end'] * FPS)
+                            if sub_start_frame >= window_start_frame and sub_end_frame <= window_end_frame and \
+                                MIN_SUB_DURATION <= sub['duration'] <= MAX_SUB_DURATION:
+                                valid_events_count += 1
+                                
+                        if valid_events_count < self.min_events: continue
                         self.eval_windows.append({
                             'video_id': video_id,
                             'window_start_frame': window_start_frame,
@@ -118,11 +128,11 @@ class DVCDataset(Dataset):
                     window_end_frame = window_start_frame + self.window_size_frames
                 
                 window = self._get_window_data(video_id, window_start_frame, window_end_frame)
-                if window[-1]['class_labels'].shape[0] >= self.min_sentences: # Check events
+                if window[-1]['class_labels'].shape[0] >= self.min_events: # Check events
                     print(f'Sampled valid window for {video_id} (try {try_num+1})')
                     return window
                 
-            print(f'Warning: Could not find window with >= {self.min_sentences} sentences for {video_id} after {self.max_tries} tries')
+            print(f'Warning: Could not find window with >= {self.min_events} events for {video_id} after {self.max_tries} tries')
             return self._get_window_data(video_id, window_start_frame, window_end_frame)  # Return last anyway
 
         # --- Fixed Window for Evaluation ---
@@ -262,10 +272,10 @@ def collate_fn(batch):
     
 
 def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=20, 
-               max_tries=10, min_sentences=1, tokenizer=None, load_by='window', seed=42):
+               max_tries=10, min_events=1, tokenizer=None, load_by='window', seed=42):
     dataset = DVCDataset( # Create a data loader for a specific split
         split=split, stride_ratio=stride_ratio, max_caption_len=max_caption_len, 
-        max_tries=max_tries, min_sentences=min_sentences, tokenizer=tokenizer, seed=seed
+        max_tries=max_tries, min_events=min_events, tokenizer=tokenizer, seed=seed
     )
     return DataLoader(
         dataset, batch_size=batch_size,
@@ -277,7 +287,7 @@ def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=2
 if __name__ == '__main__':
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base', use_fast=True)
-    train_loader = get_loader('train', batch_size=32, tokenizer=tokenizer)
+    train_loader = get_loader('train', batch_size=4, tokenizer=tokenizer)
     
     for batch in train_loader:
         video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']
