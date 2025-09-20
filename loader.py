@@ -10,24 +10,28 @@ from config import *
 
 
 class DVCDataset(Dataset):
-    def __init__(self, split, stride_ratio=0.5, max_tries=10, min_sentences=1, seed=42):
+    def __init__(self, split, stride_ratio=0.5, max_caption_len=20, max_tries=10, min_sentences=1, tokenizer=None, seed=42):
         '''
         PyTorch Dataset for DVC with on-the-fly sliding window sampling.
         Args:
             split: 'train', 'val', or 'test'
             stride_ratio: For val/test sequential sampling (e.g., 0.5 for 50% overlap)
+            max_caption_len: Max caption token length for padding/truncation
             max_tries: Max resamples for train windows with < min_sentences
             min_sentences: Min full sentences per train window
+            tokenizer: HuggingFace tokenizer for text processing
             seed: For reproducibility in random sampling
         '''
         assert split in ['train', 'val', 'test'], f"Split must be 'train', 'val', or 'test', but got {split}"
         self.split = split
         self.window_size_frames = int(WINDOW_DURATION_SECONDS * FPS)
         self.stride = int(self.window_size_frames * stride_ratio)
+        self.max_caption_len = max_caption_len
         self.max_tries = max_tries
         self.min_sentences = min_sentences
         np.random.seed(seed)
-        
+
+        self.tokenizer = tokenizer
         self.video_ids = self.load_subset(split)
         self.video_metadata = {} # Precomputed metadata per video for efficiency
         self.eval_windows = [] # Store windows for val/test splits
@@ -108,7 +112,7 @@ class DVCDataset(Dataset):
                     window_end_frame = window_start_frame + self.window_size_frames
                 
                 window = self._get_window_data(video_id, window_start_frame, window_end_frame)
-                if len(window[-1]) >= self.min_sentences: # Check events
+                if window[-1]['class_labels'].shape[0] >= self.min_sentences: # Check events
                     print(f'Sampled valid window for {video_id} (try {try_num+1})')
                     return window
                 
@@ -146,12 +150,14 @@ class DVCDataset(Dataset):
         # full_poses = self.load_poses_for_video(video_id)
         # window_poses = full_poses[window_start_frame:window_end_frame, :, :]
         window_poses = self.load_poses_for_window(video_id, window_start_frame, window_end_frame)
+        
+        # Preprocess poses: Normalize and threshold
         window_poses = normalize_keypoints(window_poses)
         window_poses = threshold_confidence(window_poses)
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         
-        # Filter subtitles in window
-        events = []
+        # Filter subtitles in window and build model-ready labels
+        labels = {'class_labels': [], 'boxes': [], 'seq_tokens': []}
         for sub in self.video_metadata[video_id]['subtitles']:
             sub_start_frame = int(sub['start'] * FPS)
             sub_end_frame = int(sub['end'] * FPS)
@@ -162,9 +168,25 @@ class DVCDataset(Dataset):
                 # Normalize to [0, 1] relative to window
                 rel_start = (sub_start_frame - window_start_frame) / self.window_size_frames
                 rel_end = (sub_end_frame - window_start_frame) / self.window_size_frames
-                events.append({'rel_start': rel_start, 'rel_end': rel_end, 'text': sub['text']})
-
-        return video_id, window_start_frame, window_end_frame, poses_tensor, events
+                center = min(max(0.5 * (rel_start + rel_end), 0.0), 1.0)
+                width = min(max(rel_end - rel_start, 0.0), 1.0)
+                labels['class_labels'].append(0) # Default single class 0
+                labels['boxes'].append([center, width])
+                labels['seq_tokens'].append(sub['text'])
+    
+        # Convert to tensors
+        if labels['class_labels']:
+            labels['class_labels'] = torch.tensor(labels['class_labels'], dtype=torch.long)
+            labels['boxes'] = torch.tensor(labels['boxes'], dtype=torch.float)
+            labels['seq_tokens'] = self.tokenizer(
+                labels['seq_tokens'], add_special_tokens=True, truncation=True, 
+                padding='max_length', max_length=self.max_caption_len, return_tensors='pt'
+            )['input_ids']
+        else: # No valid subtitles in window
+            labels['class_labels'] = torch.empty(0, dtype=torch.long)
+            labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
+            labels['seq_tokens'] = torch.empty(0, self.max_caption_len, dtype=torch.long)
+        return video_id, window_start_frame, window_end_frame, poses_tensor, labels
 
         
     def load_poses_for_video(self, video_id: str) -> np.ndarray:
@@ -220,25 +242,46 @@ def collate_fn(batch):
     Collate for variable lengths: Stack poses, list others.
     Fixed window_size, so no padding needed for poses.
     '''
-    video_ids, window_start_frames, window_end_frames, poses, events = zip(*batch)
-    return list(video_ids), list(window_start_frames), list(window_end_frames), torch.stack(poses), list(events)
+    video_ids, window_start_frames, window_end_frames, poses_tensor, labels = zip(*batch)
+    # Ensure same T across batch to stack
+    T = poses_tensor[0].shape[0]
+    assert all(p.shape[0] == T for p in poses_tensor), 'Variable T in batch; use batch_size=1 or add padding.'
+    return {
+        'video_ids': list(video_ids),
+        'window_start_frames': list(window_start_frames),
+        'window_end_frames': list(window_end_frames),
+        'pixel_values': torch.stack(poses_tensor), # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
+        'pixel_mask': torch.ones(len(poses_tensor), T, dtype=torch.bool), # All True since we have fixed-size windows
+        'labels': list(labels) # List of {'class_labels': (N_i, ), 'boxes': (N_i, 2), 'seq_tokens': (N_i, L)}
+    }
+    
 
-
-def get_loader(split='train', stride_ratio=0.5, max_tries=10, min_sentences=1, seed=42, batch_size=32):
-    # Create a data loader for a specific split
-    dataset = DVCDataset(split=split, stride_ratio=stride_ratio, max_tries=max_tries, min_sentences=min_sentences, seed=seed)
+def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=20, max_tries=10, min_sentences=1, tokenizer=None, seed=42):
+    dataset = DVCDataset( # Create a data loader for a specific split
+        split=split, stride_ratio=stride_ratio, max_caption_len=max_caption_len, 
+        max_tries=max_tries, min_sentences=min_sentences, tokenizer=tokenizer, seed=seed
+    )
     return DataLoader(
         dataset, batch_size=batch_size,
         shuffle=True if split == 'train' else False, num_workers=2,
         pin_memory=True, collate_fn=collate_fn
     )
     
-
+    
 if __name__ == '__main__':
-    train_loader = get_loader('train', batch_size=32)
-    for video_ids, start_frames, end_frames, poses, batch_events in train_loader:
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base', use_fast=True)
+    train_loader = get_loader('train', batch_size=32, tokenizer=tokenizer)
+    
+    for batch in train_loader:
+        video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']
+        poses, pixel_mask, labels = batch['pixel_values'], batch['pixel_mask'], batch['labels']
         print('Batch poses shape: ', poses.shape)
-        for video_id, start_frame, end_frame, events in zip(video_ids, start_frames, end_frames, batch_events):
-            print(f'\nVideo ID: {video_id}, Start Frame: {start_frame}, End Frame: {end_frame}')
-            for i, event in enumerate(events): print(f'- Event {i}: {event}')
+        
+        for video_id, start_frame, end_frame, events in zip(video_ids, start_frames, end_frames, labels):
+            print(f'\nVIDEO ID: {video_id}, Start Frame: {start_frame}, End Frame: {end_frame}')
+            for i, (box, event_tokens) in enumerate(zip(events['boxes'], events['seq_tokens'])):
+                print(f'[Event {i + 1}] center={box[0]:.3f}, width={box[1]:.3f}, caption length={event_tokens.shape}:\n'
+                      f'- Tokens: {event_tokens.tolist()}\n'
+                      f"- Text: {tokenizer.decode(event_tokens)}")
         break
