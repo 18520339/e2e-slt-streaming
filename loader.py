@@ -253,12 +253,12 @@ def collate_fn(batch):
     T = poses_tensor[0].shape[0]
     assert all(p.shape[0] == T for p in poses_tensor), 'Variable T in batch; use batch_size=1 or add padding.'
     return {
-        'video_ids': list(video_ids),
-        'window_start_frames': list(window_start_frames),
-        'window_end_frames': list(window_end_frames),
+        'video_ids': video_ids,
+        'window_start_frames': window_start_frames,
+        'window_end_frames': window_end_frames,
         'pixel_values': torch.stack(poses_tensor), # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
         'pixel_mask': torch.ones(len(poses_tensor), T, dtype=torch.bool), # All True since we have fixed-size windows
-        'labels': list(labels) # List of {'class_labels': (N_i, ), 'boxes': (N_i, 2), 'seq_tokens': (N_i, L)}
+        'labels': labels # List of {'class_labels': (N_i, ), 'boxes': (N_i, 2), 'seq_tokens': (N_i, L)}
     }
     
 
