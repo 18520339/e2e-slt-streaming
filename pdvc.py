@@ -68,7 +68,8 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     def __init__(
         self, config: DeformableDetrConfig, 
         vocab_size: int, bos_token_id: int, eos_token_id: int, pad_token_id: int,
-        rnn_num_layers=1, cap_dropout_rate=0.1, max_caption_len=20
+        rnn_num_layers=1, cap_dropout_rate=0.1, max_caption_len=20,
+        weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ):
         super().__init__(config)
         self.transformer = DeformableDetrModel(config) # Deformable DETR encoder-decoder model
@@ -102,7 +103,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             self.caption_head = nn.ModuleList([self.caption_head for _ in range(num_pred)])
             self.transformer.decoder.bbox_head = None
             
-        # self.loss_function = DeformableDetrForObjectDetectionLoss # This will be specified when using Trainer API
+        self.loss_function = DeformableDetrForObjectDetectionLoss(config, pad_token_id=pad_token_id, weight_dict=weight_dict)
         self.post_init()
 
 
@@ -281,8 +282,8 @@ if __name__ == '__main__':
         rnn_num_layers=1,
         cap_dropout_rate=0.1,
         max_caption_len=max_caption_len,
+        weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ).to(device)
-    model.loss_function = DeformableDetrForObjectDetectionLoss(config, pad_token_id=tokenizer.pad_token_id)
 
     # Test Training and Inference step
     model.train()

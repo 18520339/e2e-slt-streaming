@@ -155,8 +155,8 @@ class DeformableCaptioner(nn.Module):
         state, reference_points = self.prepare_for_captioning(num_queries, reference_points, transformer_outputs)
         num_events = batch_size * num_queries
         
-        seq_log_probs, seq_tokens = [], []
-        token = torch.full((num_events,), self.bos_token_id, dtype=torch.long) # # Initialize with <BOS> for all events (B*Q)
+        seq_log_probs, seq_tokens = [], [] # Initialize with <BOS> for all events (B*Q)
+        token = torch.full((num_events,), self.bos_token_id, dtype=torch.long, device=decoder_hidden_states.device)
         done = torch.zeros_like(token, dtype=torch.bool)  # (B*Q,)
 
         for t in range(self.max_caption_len):
