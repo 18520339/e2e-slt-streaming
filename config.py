@@ -24,6 +24,7 @@ MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
 MAX_SUB_DURATION = 20.0 # From LiTFiC, seconds
 WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `stats.ipynb`
 WINDOW_SIZE_FRAMES = int(WINDOW_DURATION_SECONDS * FPS)  # Number of frames per window
+WIDTH = HEIGHT = 444  # Original video frame size in BOBSL
 
 # -- Pose Preprocessing (CoSign Inspired) -----------------------------------
 # Define keypoint groups based on COCO-WholeBody (133 points: body 0-22, face 23-90, left hand 91-111, right hand 112-132)
@@ -61,10 +62,6 @@ class PDVCConfig:
     num_ref_points = 4  # Sampling points K per level/head
     vocab_size = 10000  # Placeholder; will build from data
     max_caption_len = 30  # Max words per caption
-
-# Vocabulary settings (placeholders for now)
-VOCAB_SIZE = 10000
-PAD_IDX = 0
 
 # -- Training Configuration --------------------------------------------------
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
