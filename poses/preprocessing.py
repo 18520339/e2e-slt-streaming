@@ -83,7 +83,7 @@ def threshold_confidence(keypoints: np.ndarray) -> np.ndarray:
     '''
     low_conf_mask = keypoints[:, :, 2] < CONF_THRESHOLD
     keypoints[low_conf_mask] = 0  # Zero out x,y,conf
-    print(f'Applied confidence threshold: {np.sum(low_conf_mask)} keypoints zeroed')
+    # print(f'Applied confidence threshold: {np.sum(low_conf_mask)} keypoints zeroed')
     return keypoints
 
 

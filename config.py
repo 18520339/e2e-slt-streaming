@@ -17,7 +17,7 @@ CHECKPOINT_DIR = PROJECT_ROOT / 'checkpoints'
 OUTPUT_DIR = PROJECT_ROOT / 'outputs'
 
 # -- Dataset and Dataloader Configuration ------------------------------------
-SUBSET_JSON = DATA_ROOT / 'original_data/metadata/test.json' # subset2episode.json for Train/val/test splits
+SUBSET_JSON = DATA_ROOT / 'original_data/metadata/subset2episode.json' # subset2episode.json for Train/val/test splits
 VTT_DIR = DATA_ROOT / 'automatic_annotations/signing_aligned_subtitles/auto_sat_aligned'  # Directory with .vtt files
 FPS = 12.5 # Downsampled FPS from original 25fps
 MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
@@ -37,7 +37,7 @@ RIGHT_HAND_IDS = list(range(112, 133))  # 21 points
 MOUTH_IDS = list(range(83, 91))  # Inner mouth 8 points
 FACE_IDS = list(range(23, 40)) + [53]  # First 18 as cheek/lower approx
 ALL_SELECTED_IDS = BODY_IDS + LEFT_HAND_IDS + RIGHT_HAND_IDS + MOUTH_IDS + FACE_IDS  # Total 9+21+21+8+18=77
-CONF_THRESHOLD = 0.5  # From supp: Keypoints with conf > 0.5 considered valid
+CONF_THRESHOLD = 0.4  # From supp: Keypoints with conf > 0.5 considered valid
 NUM_KEYPOINTS = len(ALL_SELECTED_IDS)
 KPS_MODULES = {
     'body': {'kps_ids': BODY_IDS, 'kps_rel_range': (0, 9)},
@@ -46,25 +46,3 @@ KPS_MODULES = {
     'mouth': {'kps_ids': MOUTH_IDS, 'kps_rel_range': (51, 59)},
     'face': {'kps_ids': FACE_IDS, 'kps_rel_range': (59, 77)},
 }
-
-# -- PDVC Baseline Model Architecture ----------------------------------------
-STGCN_CHANNELS = [3, 64, 64, 128, 128, 256, 256] # Input channels, then block channels
-
-class PDVCConfig:
-    d_model = 256  # Feature dim (Must match the last channel dim of ST-GCN)
-    num_encoder_layers = 6
-    num_decoder_layers = 6
-    num_queries = 20  # Max events per window (N_set)
-    num_feature_levels = 4  # Multi-scale levels L
-    dim_feedforward = 1024
-    dropout = 0.1
-    num_heads = 8
-    num_ref_points = 4  # Sampling points K per level/head
-    vocab_size = 10000  # Placeholder; will build from data
-    max_caption_len = 30  # Max words per caption
-
-# -- Training Configuration --------------------------------------------------
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-LEARNING_RATE = 1e-4
-NUM_EPOCHS = 50
-CLIP_GRAD_NORM = 1.0 # Gradient clipping to prevent exploding gradients

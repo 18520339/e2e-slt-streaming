@@ -64,7 +64,7 @@ class DVCDataset(Dataset):
 
 
     def _build_video_metadata(self): # Precompute for sampling efficiency
-        for video_id in tqdm(self.video_ids, desc=f"Building video metadata for {self.split} split"):
+        for video_id in tqdm(self.video_ids, desc=f'Building video metadata for {self.split} split'):
             pose_dir = POSE_ROOT / video_id
             if not pose_dir.exists():
                 raise FileNotFoundError(f'Pose directory not found: {pose_dir}')
@@ -82,7 +82,6 @@ class DVCDataset(Dataset):
                 'cumulative_frames': np.cumsum([0] + frame_counts),
                 'subtitles': parse_vtt(VTT_DIR / f'{video_id}.vtt')
             }
-            
             if self.split != 'train': # For val/test: count fixed, overlapping windows
                 for window_start_frame in range(0, total_frames, self.stride):
                     window_end_frame = window_start_frame + self.window_size_frames
@@ -129,7 +128,7 @@ class DVCDataset(Dataset):
                 
                 window = self._get_window_data(video_id, window_start_frame, window_end_frame)
                 if window[-1]['class_labels'].shape[0] >= self.min_events: # Check events
-                    print(f'Sampled valid window for {video_id} (try {try_num+1})')
+                    # print(f'Sampled valid window for {video_id} (try {try_num+1})')
                     return window
                 
             print(f'Warning: Could not find window with >= {self.min_events} events for {video_id} after {self.max_tries} tries')
@@ -274,8 +273,8 @@ def collate_fn(batch):
 def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=20, 
                max_tries=10, min_events=1, tokenizer=None, load_by='window', seed=42):
     dataset = DVCDataset( # Create a data loader for a specific split
-        split=split, stride_ratio=stride_ratio, max_caption_len=max_caption_len, 
-        max_tries=max_tries, min_events=min_events, tokenizer=tokenizer, seed=seed
+        split=split, stride_ratio=stride_ratio, max_caption_len=max_caption_len, max_tries=max_tries,
+        min_events=min_events, tokenizer=tokenizer, load_by=load_by, seed=seed
     )
     return DataLoader(
         dataset, batch_size=batch_size,
