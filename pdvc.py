@@ -20,7 +20,7 @@ from utils import ensure_cw_format
 
 
 @dataclass
-class PDVCOutput(ModelOutput):
+class DeformableDetrObjectDetectionOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     loss_dict: Optional[dict] = None
     logits: Optional[torch.FloatTensor] = None
@@ -59,7 +59,10 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         'boxes': FloatTensor (N_i, 2)       (center, width) normalized to [0,1]
     }
     '''
-    _tied_weights_keys = [r"bbox_head\.[1-9]\d*", r"class_head\.[1-9]\d*"] # When using clones, all layers > 0 will be clones, but layer 0 *is* required
+    _tied_weights_keys = [ # When using clones, all layers > 0 will be clones, but layer 0 *is* required
+        r"bbox_head\.[1-9]\d*", r"class_head\.[1-9]\d*",
+        r"count_head\.[1-9]\d*", r"caption_head\.[1-9]\d*",
+    ]  # Include all cloned heads for proper weight tying with Trainer
     _no_split_modules = None # We can't initialize the model on meta device as some weights are modified during the initialization
     
     def __init__(
@@ -111,7 +114,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.FloatTensor], PDVCOutput]:
+    ) -> Union[tuple[torch.FloatTensor], DeformableDetrObjectDetectionOutput]:
         # Ensure targets provide (center,width). If start/end (s<e & min>=0) provided, convert here
         if labels is not None: 
             labels: list[dict] = [{
@@ -215,7 +218,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             if auxiliary_outputs is not None: out += auxiliary_outputs
             return ((loss, loss_dict) + out) if loss is not None else out
         
-        return PDVCOutput(
+        return DeformableDetrObjectDetectionOutput(
             loss=loss, loss_dict=loss_dict, logits=logits, 
             pred_boxes=pred_boxes, pred_counts=pred_counts,
             pred_cap_logits=pred_cap_logits, pred_cap_tokens=pred_cap_tokens,
