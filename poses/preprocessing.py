@@ -5,7 +5,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from config import *
 
 
-def normalize_keypoints(keypoints: np.ndarray, width: int=444, height: int=444) -> np.ndarray:
+def normalize_keypoints(keypoints: np.ndarray, width: int=WIDTH, height: int=HEIGHT) -> np.ndarray:
     '''
     CoSign keypoints normalize: Group-specific centralization (subtract root per group).
     
@@ -22,6 +22,10 @@ def normalize_keypoints(keypoints: np.ndarray, width: int=444, height: int=444) 
     if keypoints.shape[1] != 133: 
         raise ValueError(f'Invalid pose shape: {keypoints.shape}, expected (frames, 133, 3)')
     
+    # Ensure float and finite to avoid overflow/underflow in linalg ops
+    keypoints = np.asarray(keypoints, dtype=np.float32, order='C')
+    np.nan_to_num(keypoints, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+
     # Split into groups
     body_kpts = keypoints[:, BODY_IDS]
     left_hand_kpts = keypoints[:, LEFT_HAND_IDS]
@@ -31,25 +35,32 @@ def normalize_keypoints(keypoints: np.ndarray, width: int=444, height: int=444) 
 
     # Root keypoints
     root_body = (body_kpts[:, 3, :2] + body_kpts[:, 4, :2]) / 2  # Mid-shoulder
-    root_left = left_hand_kpts[:, 0, :2]  # Wrist index 0 in hand
-    root_right = right_hand_kpts[:, 0, :2]  # Wrist index 0 in hand
-    root_mouth = mouth_kpts[:, 4, :2]  # Mouth center
-    root_face = face_kpts[:, -1, :2]  # Nose as root
+    root_left = left_hand_kpts[:, 0, :2]                         # Wrist index 0 in hand
+    root_right = right_hand_kpts[:, 0, :2]                       # Wrist index 0 in hand
+    root_mouth = mouth_kpts[:, 4, :2]                            # Mouth center
+    root_face = face_kpts[:, -1, :2]                             # Nose as root
 
-    # Group lengths - only use x,y coordinates
-    shoulder_length = np.linalg.norm(body_kpts[:, 3, :2] - body_kpts[:, 4, :2], axis=-1)[:, np.newaxis, np.newaxis] + 1e-6 # Avoid division by 0
-    left_hand_length = np.linalg.norm(left_hand_kpts[:, 0, :2] - left_hand_kpts[:, 9, :2], axis=-1)[:, np.newaxis, np.newaxis] + 1e-6
-    right_hand_length = np.linalg.norm(right_hand_kpts[:, 0, :2] - right_hand_kpts[:, 9, :2], axis=-1)[:, np.newaxis, np.newaxis] + 1e-6
-    mouth_length = np.linalg.norm(mouth_kpts[:, 0, :2] - mouth_kpts[:, 4, :2], axis=-1)[:, np.newaxis, np.newaxis] + 1e-6
-    face_length = np.linalg.norm(face_kpts[:, 0, :2] - face_kpts[:, 8, :2], axis=-1)[:, np.newaxis, np.newaxis] + 1e-6
-
+    # Group lengths only for x,y coordinates using np.hypot (stable √(x² + y²) to avoid overflow)
+    eps = 1e-6 # Avoid division by 0
+    v_body = body_kpts[:, 3, :2] - body_kpts[:, 4, :2]
+    v_lh = left_hand_kpts[:, 0, :2] - left_hand_kpts[:, 9, :2]
+    v_rh = right_hand_kpts[:, 0, :2] - right_hand_kpts[:, 9, :2]
+    v_mouth = mouth_kpts[:, 0, :2] - mouth_kpts[:, 4, :2]
+    v_face = face_kpts[:, 0, :2] - face_kpts[:, 8, :2]
+    
+    shoulder_length = np.hypot(v_body[:, 0], v_body[:, 1])[:, None, None] + eps
+    left_hand_length = np.hypot(v_lh[:, 0], v_lh[:, 1])[:, None, None] + eps
+    right_hand_length = np.hypot(v_rh[:, 0], v_rh[:, 1])[:, None, None] + eps
+    mouth_length = np.hypot(v_mouth[:, 0], v_mouth[:, 1])[:, None, None] + eps
+    face_length = np.hypot(v_face[:, 0], v_face[:, 1])[:, None, None] + eps
+    
     # Normalize keypoints
     norm_kpts = np.zeros((keypoints.shape[0], 77, 3), dtype=np.float32)
-    norm_kpts[:, 0:9, :2] = (body_kpts[:, :, :2] - root_body[:, np.newaxis]) / shoulder_length * 3 # 0 to 8 (9 points)
-    norm_kpts[:, 9:30, :2] = (left_hand_kpts[:, :, :2] - root_left[:, np.newaxis]) / left_hand_length * 2 # 9 to 29 (21 points)
-    norm_kpts[:, 30:51, :2] = (right_hand_kpts[:, :, :2] - root_right[:, np.newaxis]) / right_hand_length * 2 # 30 to 50 (21 points)
-    norm_kpts[:, 51:59, :2] = (mouth_kpts[:, :, :2] - root_mouth[:, np.newaxis]) / mouth_length # 51 to 58 (8 points)
-    norm_kpts[:, 59:77, :2] = (face_kpts[:, :, :2] - root_face[:, np.newaxis]) / face_length * 2 # 59 to 76 (18 points)
+    norm_kpts[:, 0:9, :2] = (body_kpts[:, :, :2] - root_body[:, None]) / shoulder_length * 3            # 0..8 (9 points)
+    norm_kpts[:, 9:30, :2] = (left_hand_kpts[:, :, :2] - root_left[:, None]) / left_hand_length * 2     # 9..29 (21 points)
+    norm_kpts[:, 30:51, :2] = (right_hand_kpts[:, :, :2] - root_right[:, None]) / right_hand_length * 2 # 30..50 (21 points)
+    norm_kpts[:, 51:59, :2] = (mouth_kpts[:, :, :2] - root_mouth[:, None]) / mouth_length               # 51..58 (8 points)
+    norm_kpts[:, 59:77, :2] = (face_kpts[:, :, :2] - root_face[:, None]) / face_length * 2              # 59..76 (18 points)
     
     # Copy confidence values without modification
     norm_kpts[:, 0:9, 2] = body_kpts[:, :, 2]
@@ -58,10 +69,10 @@ def normalize_keypoints(keypoints: np.ndarray, width: int=444, height: int=444) 
     norm_kpts[:, 51:59, 2] = mouth_kpts[:, :, 2]
     norm_kpts[:, 59:77, 2] = face_kpts[:, :, 2]
 
-    # Global scaling (assume video width=444, height=444; adjust if needed)
+    # Global scaling
     if width is not None and height is not None:
-        norm_kpts[:, :, 0] /= width  # x
-        norm_kpts[:, :, 1] /= height  # y
+        norm_kpts[:, :, 0] /= float(width)   # x
+        norm_kpts[:, :, 1] /= float(height)  # y
     return norm_kpts
 
 
