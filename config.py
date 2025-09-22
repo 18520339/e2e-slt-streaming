@@ -23,7 +23,6 @@ FPS = 12.5 # Downsampled FPS from original 25fps
 MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
 MAX_SUB_DURATION = 20.0 # From LiTFiC, seconds
 WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `stats.ipynb`
-WINDOW_SIZE_FRAMES = int(WINDOW_DURATION_SECONDS * FPS)  # Number of frames per window
 WIDTH = HEIGHT = 444  # Original video frame size in BOBSL
 
 # -- Pose Preprocessing (CoSign Inspired) -----------------------------------

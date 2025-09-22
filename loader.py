@@ -118,20 +118,19 @@ class DVCDataset(Dataset):
             video_id = self.video_ids[idx]
             max_start_frame = self.video_metadata[video_id]['total_frames'] - self.window_size_frames
 
-            for try_num in range(self.max_tries):
-                if max_start_frame <= 0: # Video is shorter than window, so we take the whole thing and will pad later
-                    window_start_frame = 0
-                    window_end_frame = self.video_metadata[video_id]['total_frames']
-                else: # Randomly select a start frame for the window
+            if max_start_frame <= 0: # Video is shorter than window, so we take the whole thing and will pad later
+                window_start_frame = 0
+                window_end_frame = self.video_metadata[video_id]['total_frames']
+            else: # Randomly select a start frame for the window
+                for try_num in range(self.max_tries):
                     window_start_frame = np.random.randint(0, max_start_frame)
                     window_end_frame = window_start_frame + self.window_size_frames
-                
-                window = self._get_window_data(video_id, window_start_frame, window_end_frame)
-                if window[-1]['class_labels'].shape[0] >= self.min_events: # Check events
-                    # print(f'Sampled valid window for {video_id} (try {try_num+1})')
-                    return window
-                
-            print(f'Warning: Could not find window with >= {self.min_events} events for {video_id} after {self.max_tries} tries')
+                    
+                    window = self._get_window_data(video_id, window_start_frame, window_end_frame)
+                    if window[-1]['class_labels'].shape[0] >= self.min_events: # Check events
+                        # print(f'Sampled valid window for {video_id} (try {try_num+1})')
+                        return window
+                print(f'Warning: Could not find window with >= {self.min_events} events for {video_id} after {self.max_tries} tries')
             return self._get_window_data(video_id, window_start_frame, window_end_frame)  # Return last anyway
 
         # --- Fixed Window for Evaluation ---
@@ -169,8 +168,17 @@ class DVCDataset(Dataset):
         # Preprocess poses: Normalize and threshold
         window_poses = normalize_keypoints(window_poses)
         window_poses = threshold_confidence(window_poses)
-        poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
-        
+
+        # Pad to fixed window size if needed and build a frame mask
+        orig_len = window_poses.shape[0]
+        if orig_len < self.window_size_frames:
+            pad_len = self.window_size_frames - orig_len
+            pad = np.zeros((pad_len, window_poses.shape[1], window_poses.shape[2]), dtype=window_poses.dtype)
+            window_poses = np.concatenate([window_poses, pad], axis=0)
+            frame_mask = torch.cat([torch.ones(orig_len, dtype=torch.bool), torch.zeros(pad_len, dtype=torch.bool)], dim=0)
+        else:
+            frame_mask = torch.ones(self.window_size_frames, dtype=torch.bool)
+
         # Filter subtitles in window and build model-ready labels
         labels = {'class_labels': [], 'boxes': [], 'seq_tokens': []}
         for sub in self.video_metadata[video_id]['subtitles']:
@@ -201,7 +209,9 @@ class DVCDataset(Dataset):
             labels['class_labels'] = torch.empty(0, dtype=torch.long)
             labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
             labels['seq_tokens'] = torch.empty(0, self.max_caption_len, dtype=torch.long)
-        return video_id, window_start_frame, window_end_frame, poses_tensor, labels
+
+        poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
+        return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels
 
         
     def load_poses_for_video(self, video_id: str) -> np.ndarray:
@@ -257,7 +267,7 @@ def collate_fn(batch):
     Collate for variable lengths: Stack poses, list others.
     Fixed window_size, so no padding needed for poses.
     '''
-    video_ids, window_start_frames, window_end_frames, poses_tensor, labels = zip(*batch)
+    video_ids, window_start_frames, window_end_frames, poses_tensor, frame_masks, labels = zip(*batch)
     T = poses_tensor[0].shape[0]
     assert all(p.shape[0] == T for p in poses_tensor), 'Variable T in batch; use batch_size=1 or add padding.'
     return {
@@ -265,8 +275,8 @@ def collate_fn(batch):
         'window_start_frames': window_start_frames,
         'window_end_frames': window_end_frames,
         'pixel_values': torch.stack(poses_tensor), # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
-        'pixel_mask': torch.ones(len(poses_tensor), T, dtype=torch.bool), # All True since we have fixed-size windows
-        'labels': labels # List of {'class_labels': (N_i, ), 'boxes': (N_i, 2), 'seq_tokens': (N_i, L)}
+        'pixel_mask': torch.stack(frame_masks),    # True for real frames, False for padding
+        'labels': labels # List of dicts (includes 'frame_mask')
     }
     
 
