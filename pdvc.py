@@ -154,17 +154,17 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             outputs_count = self.count_head[layer](torch.max(layer_hidden_states, dim=1, keepdim=False).values)
             outputs_counts.append(outputs_count)
             
-            # Box head: (B, num_queries, 2) (center, width) in [0,1]
-            delta_bbox = self.bbox_head[layer](layer_hidden_states)                      # (B, Q, 2)
-            reference = init_reference if layer == 0 else inter_references[:, layer - 1] # (B, Q, 2) if layer != 0, we use previous layer
-            reference = inverse_sigmoid(reference)                                       # (B, Q, 2) Revert to unnormalized space for box regression
-            if reference.shape[-1] == 2: delta_bbox += reference
-            elif reference.shape[-1] == 1: delta_bbox[..., :1] += reference
-            outputs_coords.append(delta_bbox.sigmoid())                                  # (B, Q, 2) in (center,width) normalized [0,1]
-            
             # Class head: (B, num_queries, num_classes) logits
             outputs_class = self.class_head[layer](layer_hidden_states)  # (B, Q, C)
             outputs_classes.append(outputs_class)
+            
+            # Box head: (B, num_queries, 2) (center, width) in [0,1]
+            delta_bbox = self.bbox_head[layer](layer_hidden_states)                      # (B, Q, 2)
+            reference = init_reference if layer == 0 else inter_references[:, layer - 1] # (B, Q, 2) if layer != 0, we use previous layer
+            bbox_reference = inverse_sigmoid(reference)                                  # (B, Q, 2) Revert to unnormalized space for box regression
+            if bbox_reference.shape[-1] == 2: delta_bbox += bbox_reference
+            elif bbox_reference.shape[-1] == 1: delta_bbox[..., :1] += bbox_reference
+            outputs_coords.append(delta_bbox.sigmoid())                                  # (B, Q, 2) in (center,width) normalized [0,1]
             
             # Caption head: align seq_tokens to queries using Hungarian matching before teacher forcing
             if labels is not None: # Teacher forcing during training
