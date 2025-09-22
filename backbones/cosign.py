@@ -43,7 +43,17 @@ class CoSign1s(nn.Module):
         self.graph, A = {}, {}
         self.gcn_modules = {}
         self.mask_ratio = mask_ratio # Portion of keypoint groups to mask
-        self.linear = nn.Sequential(nn.Linear(3, 64), nn.ReLU(inplace=True))
+        self.linear = nn.Sequential(
+            # elementwise_affine=False makes this LayerNorm a pure normalization step 
+            # (zero-mean, unit-variance per sample over [x, y, conf]) with no learned scale/bias:
+            # - Removes the chance that learned γ/β amplify outliers from preprocessing and push the first Linear into inf/NaN. 
+            #   With only 3 channels, a large γ easily explodes values.
+            # - Redundancy: the following Linear already has weight and bias, so representational capacity is not reduced; 
+            #   any needed affine transform can be learned there.
+            nn.LayerNorm(3, elementwise_affine=False), # Avoid returning NaNs
+            nn.Linear(3, 64), 
+            nn.ReLU(inplace=True)
+        )
 
         for module in KPS_MODULES.keys():
             self.graph[module] = Graph(layout=f'{module}', strategy='distance', max_hop=1)
