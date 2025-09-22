@@ -225,16 +225,14 @@ class PDVCLoss(ImageLoss):
             losses.update(self.get_loss(loss, outputs, targets, last_indices, num_boxes))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
-        auxiliary_indices = []
         if 'auxiliary_outputs' in outputs:
             for i, auxiliary_outputs in enumerate(outputs['auxiliary_outputs']):
                 indices = self.matcher(auxiliary_outputs, targets)
-                auxiliary_indices.append(indices)
                 for loss in self.losses:
                     if loss == 'masks': continue # Intermediate masks losses are too costly to compute, we ignore them
                     l_dict = self.get_loss(loss, auxiliary_outputs, targets, indices, num_boxes)
                     losses.update({f'{k}_{i}': v for k, v in l_dict.items()})
-        return losses, last_indices, auxiliary_indices
+        return losses, last_indices
         
         
 class DeformableDetrForObjectDetectionLoss:
@@ -276,6 +274,6 @@ class DeformableDetrForObjectDetectionLoss:
                 aux_weight_dict.update({f'{k}_{layer}': v for k, v in self.weight_dict.items()})
             self.weight_dict.update(aux_weight_dict) # Weights for each decoder layer
         
-        loss_dict, last_indices, auxiliary_indices = self.criterion(outputs, labels) # Compute the losses, based on outputs and labels
+        loss_dict, last_indices = self.criterion(outputs, labels) # Compute the losses, based on outputs and labels
         loss = sum(loss_dict[k] * self.weight_dict[k] for k in loss_dict if k in self.weight_dict)
-        return loss, last_indices, auxiliary_indices
+        return loss, last_indices, self.auxiliary_outputs

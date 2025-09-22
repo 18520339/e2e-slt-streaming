@@ -163,7 +163,7 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
                 layer_reference_points = reference_points[:, :, None] * torch.cat([valid_ratios, valid_ratios], -1)[:, None]
             elif reference_points.shape[-1] == 1:
                 layer_reference_points = reference_points[:, :, None] * valid_ratios[:, None, :, None]
-            else: raise ValueError("Reference points' last dimension must be of size 2")
+            else: raise ValueError("Reference points' last dimension must be of size 1 or 2")
 
             if output_hidden_states: all_hidden_states += (hidden_states,)
             layer_outputs = decoder_layer(

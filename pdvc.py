@@ -155,9 +155,9 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             outputs_counts.append(outputs_count)
             
             # Box head: (B, num_queries, 2) (center, width) in [0,1]
+            delta_bbox = self.bbox_head[layer](layer_hidden_states)                      # (B, Q, 2)
             reference = init_reference if layer == 0 else inter_references[:, layer - 1] # (B, Q, 2) if layer != 0, we use previous layer
             reference = inverse_sigmoid(reference)                                       # (B, Q, 2) Revert to unnormalized space for box regression
-            delta_bbox = self.bbox_head[layer](layer_hidden_states)                      # (B, Q, 2)
             if reference.shape[-1] == 2: delta_bbox += reference
             elif reference.shape[-1] == 1: delta_bbox[..., :1] += reference
             outputs_coords.append(delta_bbox.sigmoid())                                  # (B, Q, 2) in (center,width) normalized [0,1]
