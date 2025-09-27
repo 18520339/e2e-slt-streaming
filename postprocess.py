@@ -7,7 +7,7 @@ from utils import cw_to_se
 
 @torch.no_grad()
 def post_process_object_detection(
-    self, outputs, threshold: float = 0.5, 
+    outputs, threshold: float = 0.5, 
     target_lengths: Union[TensorType, list[int]] = None, 
     top_k: int = 10, tokenizer: AutoTokenizer = None,
 ):
@@ -25,17 +25,17 @@ def post_process_object_detection(
 
     Returns:
         `list[Dict]`: A list of dictionaries, each dictionary containing the following keys:
-        - `scores` (`torch.Tensor`): Scores of the kept predictions. 
+        - `window_scores` (`torch.Tensor`): Scores of the kept predictions. 
             The scores are for the foreground class (object) and not for the no-object class.
             Shape `(num_kept_predictions,)`.
-        - `labels` (`torch.Tensor`): Labels of the kept predictions, 
+        - `window_labels` (`torch.Tensor`): Labels of the kept predictions, 
             always 1 (foreground class) since there is only one class. 
             Shape `(num_kept_predictions,)`.
-        - `boxes` (`torch.Tensor`): Bounding boxes of the kept predictions in (start, end) format.
+        - `window_events` (`torch.Tensor`): Bounding boxes of the kept predictions in (start, end) format.
             Shape `(num_kept_predictions, 2)`.
-        - `cap_scores` (`list[float]`): Caption scores of the kept predictions.
+        - `window_caption_scores` (`list[float]`): Caption scores of the kept predictions.
             Shape `(num_kept_predictions,)`.
-        - `cap_tokens` (`list[str]`): Decoded caption tokens of the kept predictions.
+        - `window_captions` (`list[str]`): Decoded caption tokens of the kept predictions.
             Shape `(num_kept_predictions,)`.
     '''
     out_logits, out_bbox = outputs.logits, outputs.pred_boxes
@@ -56,30 +56,30 @@ def post_process_object_detection(
     boxes = cw_to_se(out_bbox) # Convert (center, width) to (start, end) format, shape (batch_size, num_queries, 2)
     boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 2))         # (batch_size, k_value, 2)
 
-    # And from relative [0, 1] to absolute [0, height] coordinates
+    # And from relative [0, 1] to absolute [0, target_length] coordinates
     if target_lengths is not None:
         scale_fct = torch.stack([target_lengths, target_lengths], dim=1).to(boxes.device)
         boxes = boxes * scale_fct[:, None, :]
         
     if len(pred_cap_tokens):
-        mask = pred_cap_tokens != tokenizer.eos_token_id                # (batch_size, num_queries, max_caption_len)
-        cap_scores = (pred_cap_logits * mask).sum(dim=-1).cpu().numpy() # (batch_size, num_queries)
-        cap_scores = [cap_scores[i][topk_boxes[i]] for i in range(cap_scores.shape[0])] # (batch_size, k_value)
+        mask = pred_cap_tokens != tokenizer.eos_token_id                                               # (batch_size, num_queries, max_caption_len)
+        caption_scores = (pred_cap_logits * mask).sum(dim=-1).cpu().numpy()                            # (batch_size, num_queries)
+        caption_scores = [caption_scores[i][topk_boxes[i]] for i in range(caption_scores.shape[0])]    # (batch_size, k_value)
         
-        pred_cap_tokens = pred_cap_tokens.detach().cpu().numpy()        # (batch_size, num_queries, max_caption_len)
+        pred_cap_tokens = pred_cap_tokens.detach().cpu().numpy()                                       # (batch_size, num_queries, max_caption_len)
         pred_cap_tokens = [pred_cap_tokens[i][topk_boxes[i]] for i in range(pred_cap_tokens.shape[0])] # (batch_size, k_value, max_caption_len)
-        pred_cap_tokens = [[
+        pred_captions = [[
             tokenizer.decode(cap_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True) 
             for cap_tokens in batch_cap_tokens
-        ] for batch_cap_tokens in pred_cap_tokens]                      # (batch_size, k_value)
+        ] for batch_cap_tokens in pred_cap_tokens]                                                     # (batch_size, k_value)
     else: # No caption tokens predicted, so fill with empty strings and very low scores
-        cap_scores = [[-1e5] * k_value] * out_logits.shape[0]           # (batch_size, k_value)
-        pred_cap_tokens = [[''] * k_value] * out_logits.shape[0]        # (batch_size, k_value)
+        caption_scores = [[-1e5] * k_value] * out_logits.shape[0]                                      # (batch_size, k_value)
+        pred_captions = [[''] * k_value] * out_logits.shape[0]                                         # (batch_size, k_value)
         
     return [{
-        'scores': s[s > threshold], 
-        'labels': l[s > threshold], 
-        'boxes': b[s > threshold], 
-        'cap_scores': [c[i] for i in range(len(c)) if s[i] > threshold],
-        'cap_tokens': [t[i] for i in range(len(t)) if s[i] > threshold],
-    } for s, l, b, c, t in zip(scores, labels, boxes, cap_scores, pred_cap_tokens)]
+        'window_scores': s[s > threshold], 
+        'window_labels': l[s > threshold], 
+        'window_events': b[s > threshold], 
+        'window_caption_scores': [c[i] for i in range(len(c)) if s[i] > threshold],
+        'window_captions': [t[i] for i in range(len(t)) if s[i] > threshold],
+    } for s, l, b, c, t in zip(scores, labels, boxes, caption_scores, pred_captions)]
