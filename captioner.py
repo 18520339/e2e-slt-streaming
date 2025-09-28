@@ -36,11 +36,11 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
         # Deformable attention with concatenated features along last dim
         hidden_states, attn_weights = self.deformable_attn(
             hidden_states=torch.cat((prev_h, query), 2),  # (B, Q, 2*D)
-            attention_mask=transformer_outputs.mask_flatten,
-            encoder_hidden_states=transformer_outputs.encoder_last_hidden_state, 
+            attention_mask=transformer_outputs['mask_flatten'],
+            encoder_hidden_states=transformer_outputs['encoder_last_hidden_state'], 
             reference_points=reference_points, 
-            temporal_shapes=transformer_outputs.temporal_shapes, 
-            level_start_index=transformer_outputs.level_start_index, 
+            temporal_shapes=transformer_outputs['temporal_shapes'], 
+            level_start_index=transformer_outputs['level_start_index'], 
         )
         hidden_states = hidden_states.reshape(batch_size, self.n_heads, -1, num_queries, self.n_levels * self.n_points).permute(0, 3, 1, 4, 2)
         hidden_states = hidden_states.reshape(batch_size * num_queries, self.n_heads, self.n_levels * self.n_points, self.attn_feat_dim)
@@ -103,9 +103,9 @@ class DeformableCaptioner(nn.Module):
             weight.new_zeros(self.rnn_num_layers, num_events, self.config.d_model)
         )
         if reference_points.shape[-1] == 2:
-            reference_points = reference_points[:, :, None] * torch.stack([transformer_outputs.valid_ratios] * 2, -1)[:, None]
+            reference_points = reference_points[:, :, None] * torch.stack([transformer_outputs['valid_ratios']] * 2, -1)[:, None]
         elif reference_points.shape[-1] == 1:
-            reference_points = reference_points[:, :, None] * transformer_outputs.valid_ratios[:, None, :, None]
+            reference_points = reference_points[:, :, None] * transformer_outputs['valid_ratios'][:, None, :, None]
         return state, reference_points
 
 

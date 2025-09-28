@@ -25,6 +25,9 @@ class DeformableDetrObjectDetectionOutput(ModelOutput):
     loss_dict: Optional[dict] = None
     logits: Optional[torch.FloatTensor] = None
     pred_boxes: Optional[torch.FloatTensor] = None
+    pred_counts: Optional[FloatTensor] = None
+    pred_cap_logits: Optional[FloatTensor] = None
+    pred_cap_tokens: Optional[LongTensor] = None
     auxiliary_outputs: Optional[list[dict]] = None
     init_reference_points: Optional[torch.FloatTensor] = None
     last_hidden_state: Optional[torch.FloatTensor] = None
@@ -36,11 +39,6 @@ class DeformableDetrObjectDetectionOutput(ModelOutput):
     encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     encoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[tuple[torch.FloatTensor]] = None
-    enc_outputs_class: Any = None
-    enc_outputs_coord_logits: Optional[torch.FloatTensor] = None
-    pred_counts: Optional[FloatTensor] = None
-    pred_cap_logits: Optional[FloatTensor] = None
-    pred_cap_tokens: Optional[LongTensor] = None
     
 
 class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
@@ -134,6 +132,32 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        
+        if not return_dict:
+            if output_attentions and output_hidden_states:
+                encoder_last_hidden_state = transformer_outputs[7]
+            elif output_attentions and not output_hidden_states:
+                encoder_last_hidden_state = transformer_outputs[6]
+            elif not output_attentions and output_hidden_states:
+                encoder_last_hidden_state = transformer_outputs[5]
+            else:
+                encoder_last_hidden_state = transformer_outputs[4]
+            
+            transformer_outputs_for_captioner = {
+                'encoder_last_hidden_state': encoder_last_hidden_state,
+                'mask_flatten': transformer_outputs[-4],
+                'temporal_shapes': transformer_outputs[-3],
+                'level_start_index': transformer_outputs[-2],
+                'valid_ratios': transformer_outputs[-1],
+            }
+        else:
+            transformer_outputs_for_captioner = {
+                'encoder_last_hidden_state': transformer_outputs.encoder_last_hidden_state,
+                'mask_flatten': transformer_outputs.mask_flatten,
+                'temporal_shapes': transformer_outputs.temporal_shapes,
+                'level_start_index': transformer_outputs.level_start_index,
+                'valid_ratios': transformer_outputs.valid_ratios,
+            }
 
         # Decoder intermediate states: shape (B, L, Q, D) -> we need per-layer lists (D is the d_model)
         hidden_states = transformer_outputs.intermediate_hidden_states if return_dict else transformer_outputs[2]        # (B, L, Q, D)
@@ -182,12 +206,12 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                     L = min(max_len, tgt_tokens.shape[-1])
                     aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
                 
-                cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, reference, transformer_outputs)
+                cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, reference, transformer_outputs_for_captioner)
                 cap_tokens = aligned_tokens
                 
             else: # Greedy or multinomial sampling during inference
                 if layer == hidden_states.shape[1] - 1: # Only predict captions for last layer
-                    cap_probs, cap_tokens = self.caption_head[layer].sample(layer_hidden_states, reference, transformer_outputs)
+                    cap_probs, cap_tokens = self.caption_head[layer].sample(layer_hidden_states, reference, transformer_outputs_for_captioner)
                 else: # For other layers, just append empty tensors
                     cap_probs = torch.zeros(B, Q, self.caption_head[layer].max_caption_len, device=device, dtype=torch.float32)
                     cap_tokens = torch.zeros(B, Q, self.caption_head[layer].max_caption_len, device=device, dtype=torch.long)
@@ -215,13 +239,14 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             )
 
         if not return_dict:
-            out = (logits, pred_boxes) + transformer_outputs
-            if auxiliary_outputs is not None: out += auxiliary_outputs
+            out = (logits, pred_boxes, pred_counts, pred_cap_logits, pred_cap_tokens)
+            if auxiliary_outputs is not None: out += (auxiliary_outputs,) + transformer_outputs[:-4]
+            else: out += transformer_outputs[:-4] # Exclude mask_flatten, temporal_shapes, level_start_index, valid_ratios
             return ((loss, loss_dict) + out) if loss is not None else out
         
         return DeformableDetrObjectDetectionOutput(
-            loss=loss, loss_dict=loss_dict, logits=logits, 
-            pred_boxes=pred_boxes, pred_counts=pred_counts,
+            loss=loss, loss_dict=loss_dict, 
+            logits=logits, pred_boxes=pred_boxes, pred_counts=pred_counts,
             pred_cap_logits=pred_cap_logits, pred_cap_tokens=pred_cap_tokens,
             auxiliary_outputs=auxiliary_outputs,
             last_hidden_state=transformer_outputs.last_hidden_state,
@@ -234,8 +259,6 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             intermediate_hidden_states=transformer_outputs.intermediate_hidden_states,
             intermediate_reference_points=transformer_outputs.intermediate_reference_points,
             init_reference_points=transformer_outputs.init_reference_points,
-            enc_outputs_class=transformer_outputs.enc_outputs_class,
-            enc_outputs_coord_logits=transformer_outputs.enc_outputs_coord_logits,
         )
 
 

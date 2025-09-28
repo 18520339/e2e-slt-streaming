@@ -23,8 +23,6 @@ class DeformableDetrModelOutput(ModelOutput):
     encoder_last_hidden_state: Optional[torch.FloatTensor] = None
     encoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
     encoder_attentions: Optional[tuple[torch.FloatTensor]] = None
-    enc_outputs_class: Optional[torch.FloatTensor] = None
-    enc_outputs_coord_logits: Optional[torch.FloatTensor] = None
     mask_flatten: Optional[FloatTensor] = None
     temporal_shapes: Optional[FloatTensor] = None
     level_start_index: Optional[FloatTensor] = None
@@ -176,8 +174,6 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
 
         # Prepare decoder inputs (query embeddings and reference points)
         batch_size, _, num_channels = encoder_outputs[0].shape
-        enc_outputs_class = None
-        enc_outputs_coord_logits = None
         query_pos_embed = self.query_position_embeddings.weight
         self_attn_mask = torch.ones(batch_size, query_pos_embed.shape[0], device=query_pos_embed.device).bool()
         
@@ -204,8 +200,8 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         )
 
         if not return_dict:
-            enc_outputs = tuple(value for value in [enc_outputs_class, enc_outputs_coord_logits] if value is not None)
-            return (init_reference_points,) + decoder_outputs + encoder_outputs + enc_outputs
+            return (init_reference_points,) + decoder_outputs + encoder_outputs + \
+                   (mask_flatten, temporal_shapes, level_start_index, valid_ratios)
 
         return DeformableDetrModelOutput(
             init_reference_points=init_reference_points,
@@ -218,8 +214,6 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             encoder_last_hidden_state=encoder_outputs.last_hidden_state,
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
-            enc_outputs_class=enc_outputs_class,
-            enc_outputs_coord_logits=enc_outputs_coord_logits,
             mask_flatten=mask_flatten,
             temporal_shapes=temporal_shapes,
             level_start_index=level_start_index,

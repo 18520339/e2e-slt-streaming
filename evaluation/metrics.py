@@ -55,13 +55,8 @@ def compute_metrics(
 	temporal_iou_thresholds: Sequence[float] = (0.3, 0.5, 0.7, 0.9),
     tokenizer: AutoTokenizer = None,
 ) -> Dict[str, float]:
-    predictions, targets = evaluation_results.predictions, evaluation_results.label_ids
-    pred_boxes = predictions.get('pred_boxes')            # (B, Q, 2) in (center, width)
-    pred_counts = predictions.get('pred_counts')          # (B, Q + 1)
-    pred_cap_logits = predictions.get('pred_cap_logits')  # (B, Q, L)
-    pred_cap_tokens = predictions.get('pred_cap_tokens')  # (B, Q, L)
-
     # Postprocess to get top-k per window, plus caption texts/scores
+    predictions, targets = evaluation_results.predictions, evaluation_results.label_ids
     post_processed_outputs = post_process_object_detection(
         outputs=predictions,
         top_k=top_k,
@@ -73,12 +68,10 @@ def compute_metrics(
     # Build per-window prediction lists with reranking and topN selection
     batch_pred_events: List[List[Tuple[float, float]]] = []
     batch_pred_captions: List[List[str]] = []
-    batch_pred_det_scores: List[List[float]] = []
-    batch_pred_cap_scores: List[List[float]] = []
 
     # Number of events predicted per window from count head
-    if pred_counts is not None:
-        topNs = pred_counts.argmax(dim=-1).clamp(min=0).cpu().numpy().tolist()
+    if predictions.get('pred_counts') is not None:
+        topNs = predictions.get('pred_counts').argmax(dim=-1).clamp(min=0).cpu().numpy().tolist()
     else:
         topNs = [min(top_k, len(p['scores'])) for p in post_processed_outputs]
 
@@ -99,13 +92,11 @@ def compute_metrics(
             keep = int(topNs[pred_window_idx]) 
         else: # Otherwise, use top_k
             keep = min(top_k, len(order))  
+            
         keep = max(0, min(keep, len(order))) # Clamp to valid range
         chosen_event_ids = order[:keep]
-        
         batch_pred_events.append([tuple(window_events[i]) for i in chosen_event_ids])
         batch_pred_captions.append([window_captions[i] for i in chosen_event_ids])
-        batch_pred_det_scores.append([float(window_scores[i]) for i in chosen_event_ids])
-        batch_pred_cap_scores.append([float(window_caption_scores[i]) for i in chosen_event_ids])
 
     # Extract ground truth from label_ids
     labels = evaluation_results.label_ids # List of {'class_labels': (N_i, ), 'boxes': (N_i, 2), 'seq_tokens': (N_i, L)}
