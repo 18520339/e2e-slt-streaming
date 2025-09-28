@@ -1,4 +1,3 @@
-import torch
 from pathlib import Path
 
 try:

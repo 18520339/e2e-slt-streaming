@@ -7,21 +7,24 @@ from utils import cw_to_se
 
 @torch.no_grad()
 def post_process_object_detection(
-    outputs, threshold: float = 0.5, 
+    outputs, top_k: int = 10, threshold: float = 0.5, 
     target_lengths: Union[TensorType, list[int]] = None, 
-    top_k: int = 10, tokenizer: AutoTokenizer = None,
+    tokenizer: AutoTokenizer = None,
 ):
     '''
     Converts the raw output of [`DeformableDetrForObjectDetection`] into final bounding boxes in (start, end) format. 
 
     Args:
         outputs ([`DetrObjectDetectionOutput`]): Raw outputs of the model.
-        threshold (`float`, *optional*): Score threshold to keep object detection predictions.
+        top_k (`int`, *optional*, defaults to 10):
+            Keep only top k bounding boxes before filtering by thresholding.
+        threshold (`float`, *optional*): 
+            Score threshold to keep object detection predictions.
         target_lengths (`torch.Tensor` or `list[int]`, *optional*):
             Tensor of shape `(batch_size)` or list of integers containing the target length
             of each clip in the batch. If left to None, predictions will not be resized.
-        top_k (`int`, *optional*, defaults to 10):
-            Keep only top k bounding boxes before filtering by thresholding.
+        tokenizer (`AutoTokenizer`, *optional*):
+            Tokenizer used to decode caption tokens into strings.
 
     Returns:
         `list[Dict]`: A list of dictionaries, each dictionary containing the following keys:
