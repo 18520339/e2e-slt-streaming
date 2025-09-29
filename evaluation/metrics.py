@@ -76,16 +76,16 @@ def compute_metrics(
         topNs = [min(top_k, len(p['scores'])) for p in post_processed_outputs]
 
     for pred_window_idx, pred_window in enumerate(post_processed_outputs):
-        window_scores = pred_window['window_scores'].detach().cpu().numpy().tolist()
-        window_events = pred_window['window_events'].detach().cpu().numpy().tolist()  # (start, end)
-        window_caption_scores = pred_window.get('window_caption_scores', [0.0] * len(window_scores))
-        window_captions = pred_window.get('window_captions', [''] * len(window_scores))
+        event_scores = pred_window['event_scores'].detach().cpu().numpy().tolist()
+        event_ranges = pred_window['event_ranges'].detach().cpu().numpy().tolist()  # (start, end)
+        event_caption_scores = pred_window.get('event_caption_scores', [0.0] * len(event_scores))
+        event_captions = pred_window.get('event_captions', [''] * len(event_scores))
 
         cap_norm = [ # Normalize caption score by length^T to discourage verbosity
             c / (max(1, len(tokenizer.encode(t))) ** ranking_temperature + 1e-5) 
-            for c, t in zip(window_caption_scores, window_captions)
+            for c, t in zip(event_caption_scores, event_captions)
         ]
-        joint = [alpha * c + (1 - alpha) * s for c, s in zip(cap_norm, window_scores)]
+        joint = [alpha * c + (1 - alpha) * s for c, s in zip(cap_norm, event_scores)]
         order = list(np.argsort(joint)[::-1]) # Descending order
 
         if pred_window_idx < len(topNs): # If pred_counts provided, use it
@@ -95,8 +95,8 @@ def compute_metrics(
             
         keep = max(0, min(keep, len(order))) # Clamp to valid range
         chosen_event_ids = order[:keep]
-        batch_pred_events.append([tuple(window_events[i]) for i in chosen_event_ids])
-        batch_pred_captions.append([window_captions[i] for i in chosen_event_ids])
+        batch_pred_events.append([tuple(event_ranges[i]) for i in chosen_event_ids])
+        batch_pred_captions.append([event_captions[i] for i in chosen_event_ids])
 
     # Extract ground truth from label_ids
     labels = evaluation_results.label_ids # List of {'class_labels': (N_i, ), 'boxes': (N_i, 2), 'seq_tokens': (N_i, L)}

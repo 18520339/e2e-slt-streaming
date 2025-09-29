@@ -265,6 +265,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
 if __name__ == '__main__':
     from loader import get_loader
     from transformers import AutoTokenizer
+    from postprocess import post_process_object_detection
 
     # Fetch 1 batch from Data loader
     max_caption_len = 12
@@ -307,12 +308,15 @@ if __name__ == '__main__':
         max_caption_len=max_caption_len,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ).to(device)
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f'Model initialized with {total_params / 1e6:.2f}M parameters')
 
     # Test Training and Inference step
     model.train()
     with torch.enable_grad():
+        print('\n--- Training step ---')
         out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, labels=labels, return_dict=True)
-        print('--- Training step ---')
         print('- loss:', out.loss)
         print('- logits:', out.logits.shape)
         print('- pred_boxes:', out.pred_boxes.shape)
@@ -323,10 +327,27 @@ if __name__ == '__main__':
         
     model.eval()
     with torch.no_grad():
+        print('\n--- Inference step ---')
         out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, return_dict=True)
-        print('--- Inference step ---')
         print('- logits:', out.logits.shape)
         print('- pred_boxes:', out.pred_boxes.shape)
         print('- pred_counts:', out.pred_counts.shape)
         print('- pred_cap_logits:', out.pred_cap_logits.shape)
         print('- pred_cap_tokens:', out.pred_cap_tokens.shape)
+
+        results = post_process_object_detection( # Convert raw outputs to final events and captions
+            outputs=out, top_k=10, threshold=0.5,
+            target_lengths=pixel_mask.sum(dim=1).to(out.pred_boxes.dtype), # (B,)
+            tokenizer=tokenizer,
+        )
+        print('\n--- Post-process results ---')
+        for i, r in enumerate(results):
+            num_events_kept = r['event_scores'].numel()
+            print(f'[Window {i}] {num_events_kept} events kept (threshold=0.5):')
+            if num_events_kept == 0: continue
+            for j, (score, label, event, cap_score, caption) in enumerate(zip(
+                r['event_scores'], r['event_labels'], r['event_ranges'],
+                r['event_caption_scores'], r['event_captions']
+            )):
+                start, end = event[0], event[1]
+                print(f'- Event {j}: score={score:.3f}; label={label}; span=({start:.3f}; {end:.3f}); cap_score={cap_score:.3f}; text="{caption}"')

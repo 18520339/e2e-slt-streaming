@@ -28,17 +28,17 @@ def post_process_object_detection(
 
     Returns:
         `list[Dict]`: A list of dictionaries, each dictionary containing the following keys:
-        - `window_scores` (`torch.Tensor`): Scores of the kept predictions. 
+        - `event_scores` (`torch.Tensor`): Scores of the kept predictions. 
             The scores are for the foreground class (object) and not for the no-object class.
             Shape `(num_kept_predictions,)`.
-        - `window_labels` (`torch.Tensor`): Labels of the kept predictions, 
+        - `event_labels` (`torch.Tensor`): Labels of the kept predictions, 
             always 1 (foreground class) since there is only one class. 
             Shape `(num_kept_predictions,)`.
-        - `window_events` (`torch.Tensor`): Bounding boxes of the kept predictions in (start, end) format.
+        - `event_events` (`torch.Tensor`): Bounding boxes of the kept predictions in (start, end) format.
             Shape `(num_kept_predictions, 2)`.
-        - `window_caption_scores` (`list[float]`): Caption scores of the kept predictions.
+        - `event_caption_scores` (`list[float]`): Caption scores of the kept predictions.
             Shape `(num_kept_predictions,)`.
-        - `window_captions` (`list[str]`): Decoded caption tokens of the kept predictions.
+        - `event_captions` (`list[str]`): Decoded caption tokens of the kept predictions.
             Shape `(num_kept_predictions,)`.
     '''
     out_logits, out_bbox = outputs.logits, outputs.pred_boxes
@@ -71,18 +71,18 @@ def post_process_object_detection(
         
         pred_cap_tokens = pred_cap_tokens.detach().cpu().numpy()                                       # (batch_size, num_queries, max_caption_len)
         pred_cap_tokens = [pred_cap_tokens[i][topk_boxes[i]] for i in range(pred_cap_tokens.shape[0])] # (batch_size, k_value, max_caption_len)
-        pred_captions = [[
-            tokenizer.decode(cap_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True) 
-            for cap_tokens in batch_cap_tokens
-        ] for batch_cap_tokens in pred_cap_tokens]                                                     # (batch_size, k_value)
+        pred_captions = [                                                                              # (batch_size, k_value)
+            tokenizer.batch_decode(topk_cap_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True) 
+            for topk_cap_tokens in pred_cap_tokens
+        ]                                                      
     else: # No caption tokens predicted, so fill with empty strings and very low scores
         caption_scores = [[-1e5] * k_value] * out_logits.shape[0]                                      # (batch_size, k_value)
         pred_captions = [[''] * k_value] * out_logits.shape[0]                                         # (batch_size, k_value)
         
     return [{
-        'window_scores': s[s > threshold], 
-        'window_labels': l[s > threshold], 
-        'window_events': b[s > threshold], 
-        'window_caption_scores': [c[i] for i in range(len(c)) if s[i] > threshold],
-        'window_captions': [t[i] for i in range(len(t)) if s[i] > threshold],
+        'event_scores': s[s > threshold], 
+        'event_labels': l[s > threshold], 
+        'event_ranges': b[s > threshold], 
+        'event_caption_scores': [c[i] for i in range(len(c)) if s[i] > threshold],
+        'event_captions': [t[i] for i in range(len(t)) if s[i] > threshold],
     } for s, l, b, c, t in zip(scores, labels, boxes, caption_scores, pred_captions)]
