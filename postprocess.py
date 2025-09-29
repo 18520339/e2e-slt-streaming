@@ -50,10 +50,10 @@ def post_process_object_detection(
         if len(out_logits) != len(target_lengths):
             raise ValueError('Make sure that you pass in as many target lengths as the batch dimension of the logits')
 
-    prob = out_logits.sigmoid()               # (batch_size, num_queries, num_classes)
-    prob = prob.view(out_logits.shape[0], -1) # (batch_size, num_queries * num_classes)
-    k_value = min(top_k, prob.size(1))        # Ensure k_value does not exceed total predictions
-    scores, topk_indexes = torch.topk(prob, k_value, dim=1) # (batch_size, k_value)
+    prob = out_logits.sigmoid()                                                      # (batch_size, num_queries, num_classes)
+    prob = prob.view(out_logits.shape[0], -1)                                        # (batch_size, num_queries * num_classes)
+    k_value = min(top_k, prob.size(1)) if top_k else prob.size(1)                    # Ensure k_value does not exceed total predictions
+    scores, topk_indexes = torch.topk(prob, k_value, dim=1)                          # (batch_size, k_value)
 
     topk_boxes = torch.div(topk_indexes, out_logits.shape[2], rounding_mode='floor') # (batch_size, k_value)
     labels = topk_indexes % out_logits.shape[2]                                      # (batch_size, k_value)
@@ -84,6 +84,6 @@ def post_process_object_detection(
         'event_scores': s[s > threshold], 
         'event_labels': l[s > threshold], 
         'event_ranges': b[s > threshold], 
-        'event_caption_scores': [c[i] for i in range(len(c)) if s[i] > threshold],
-        'event_captions': [t[i] for i in range(len(t)) if s[i] > threshold],
+        'event_caption_scores': [c[i] for i in range(len(c)) if s[i] > threshold] if len(c) else [],
+        'event_captions': [t[i] for i in range(len(t)) if s[i] > threshold] if len(t) else [],
     } for s, l, b, c, t in zip(scores, labels, boxes, caption_scores, pred_captions)]

@@ -106,7 +106,6 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
 
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
         self.bbox_embed = None
-        self.class_embed = None
         self.post_init() # Initialize weights and apply final processing
 
 
@@ -160,7 +159,7 @@ class DeformableDetrDecoder(DeformableDetrPreTrainedModel):
 
         for idx, decoder_layer in enumerate(self.layers):
             if reference_points.shape[-1] == 2:
-                layer_reference_points = reference_points[:, :, None] * torch.cat([valid_ratios, valid_ratios], -1)[:, None]
+                layer_reference_points = reference_points[:, :, None] * torch.stack([valid_ratios, valid_ratios], -1)[:, None]
             elif reference_points.shape[-1] == 1:
                 layer_reference_points = reference_points[:, :, None] * valid_ratios[:, None, :, None]
             else: raise ValueError("Reference points' last dimension must be of size 1 or 2")

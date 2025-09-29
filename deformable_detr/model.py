@@ -1,10 +1,16 @@
+import math
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor, FloatTensor
+from torch import nn, Tensor, FloatTensor, LongTensor
+
 from dataclasses import dataclass
 from typing import Union, List, Optional, Tuple
 from transformers import DeformableDetrConfig
-from transformers.models.deformable_detr.modeling_deformable_detr import BaseModelOutput, ModelOutput, DeformableDetrPreTrainedModel
+from transformers.models.deformable_detr.modeling_deformable_detr import (
+    BaseModelOutput, ModelOutput, 
+    DeformableDetrPreTrainedModel,
+    inverse_sigmoid
+)
 from backbones import CoSign1s
 from .position_encoding import PositionEmbeddingSine
 from .encoder import DeformableDetrEncoder
@@ -13,16 +19,16 @@ from .decoder import DeformableDetrDecoder
 
 @dataclass
 class DeformableDetrModelOutput(ModelOutput):
-    init_reference_points: Optional[torch.FloatTensor] = None
-    last_hidden_state: Optional[torch.FloatTensor] = None
-    intermediate_hidden_states: Optional[torch.FloatTensor] = None
-    intermediate_reference_points: Optional[torch.FloatTensor] = None
-    decoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
-    decoder_attentions: Optional[tuple[torch.FloatTensor]] = None
-    cross_attentions: Optional[tuple[torch.FloatTensor]] = None
-    encoder_last_hidden_state: Optional[torch.FloatTensor] = None
-    encoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
-    encoder_attentions: Optional[tuple[torch.FloatTensor]] = None
+    init_reference_points: Optional[FloatTensor] = None
+    last_hidden_state: Optional[FloatTensor] = None
+    intermediate_hidden_states: Optional[FloatTensor] = None
+    intermediate_reference_points: Optional[FloatTensor] = None
+    decoder_hidden_states: Optional[tuple[FloatTensor]] = None
+    decoder_attentions: Optional[tuple[FloatTensor]] = None
+    cross_attentions: Optional[tuple[FloatTensor]] = None
+    encoder_last_hidden_state: Optional[FloatTensor] = None
+    encoder_hidden_states: Optional[tuple[FloatTensor]] = None
+    encoder_attentions: Optional[tuple[FloatTensor]] = None
     mask_flatten: Optional[FloatTensor] = None
     temporal_shapes: Optional[FloatTensor] = None
     level_start_index: Optional[FloatTensor] = None
@@ -38,9 +44,6 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
     '''
     def __init__(self, config: DeformableDetrConfig, temporal_kernel=5):
         super().__init__(config)
-        if self.config.two_stage:
-            raise NotImplementedError('two_stage=True is not supported in the temporal variant')
-            
         # Positional encoding: d_model//2 for temporal pos, d_model//2 for duration pos
         self.position_embeddings = PositionEmbeddingSine(config.d_model // 2, normalize=True)
         self.backbone = CoSign1s(temporal_kernel=temporal_kernel, hidden_size=config.d_model)
@@ -69,8 +72,13 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         self.encoder = DeformableDetrEncoder(config)
         self.decoder = DeformableDetrDecoder(config)
         self.level_embed = nn.Parameter(Tensor(config.num_feature_levels, config.d_model)) # For multi-scale features
-        self.query_position_embeddings = nn.Embedding(config.num_queries, config.d_model * 2)
-        self.reference_points = nn.Linear(config.d_model, 1) # Predict (center) in [0,1] for each query via sigmoid
+        
+        if config.with_box_refine:
+            self.query_position_embeddings = nn.Embedding(config.num_queries, config.d_model * 2)
+            self.reference_points = nn.Linear(config.d_model, 1) # Predict (center) in [0,1] for each query via sigmoid
+        else:
+            self.pos_trans = nn.Linear(config.d_model, config.d_model * 2)
+            self.pos_trans_norm = nn.LayerNorm(config.d_model * 2)
         self._reset_parameters()
         self.post_init()
         
@@ -84,11 +92,25 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             if p.dim() > 1: nn.init.xavier_uniform_(p)
 
 
+    def get_proposal_pos_embed(self, proposals):  # Get the position embedding of the proposals
+        num_pos_feats = self.config.d_model // 2
+        temperature = 10000
+        scale = 2 * math.pi
+
+        dim_t = torch.arange(num_pos_feats, dtype=proposals.dtype, device=proposals.device)
+        dim_t = temperature ** (2 * torch.div(dim_t, 2, rounding_mode='floor') / num_pos_feats)
+        proposals = proposals.sigmoid() * scale   # (B, num_queries, 2)
+        pos = proposals[:, :, :, None] / dim_t    # (B, num_queries, 2, num_pos_feats)
+        
+        # (B, num_queries, 2, num_pos_feats // 2, 2) -> (B, num_queries, num_pos_feats * 2)
+        return torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
+    
+
     def forward(
-        self,
-        pixel_values: Tensor,                 # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
-        pixel_mask: Optional[Tensor] = None,  # (B, T) 1=valid, 0=pad
-        encoder_outputs: Optional[Tensor] = None,
+        self, pixel_values: FloatTensor,          # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
+        pixel_mask: Optional[LongTensor] = None,  # (B, T) 1=valid, 0=pad
+        labels: Optional[list[dict]] = None,      # {'class_labels': LongTensor (N_i, ), 'boxes': FloatTensor (N_i, 2), 'seq_tokens': LongTensor (N_i, L)}
+        encoder_outputs: Optional[FloatTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -133,8 +155,8 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             batch_size, _, width = source.shape
             temporal_shapes.append(width)
             
-            source = source.transpose(1, 2)        # (B, T, C) 
-            pos_embed = pos_embed.transpose(1, 2)  # (B, T, C)
+            source = source.transpose(1, 2)                          # (B, T, C) 
+            pos_embed = pos_embed.transpose(1, 2)                    # (B, T, C)
             lvl_pos_embed = pos_embed + self.level_embed[level].view(1, 1, -1)
             
             source_flatten.append(source)
@@ -174,16 +196,26 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
 
         # Prepare decoder inputs (query embeddings and reference points)
         batch_size, _, num_channels = encoder_outputs[0].shape
-        query_pos_embed = self.query_position_embeddings.weight
-        self_attn_mask = torch.ones(batch_size, query_pos_embed.shape[0], device=query_pos_embed.device).bool()
-        
-        # query_pos_embed, target = torch.chunk(query_pos_embed, 2, dim=1)
-        query_pos_embed, target = torch.split(query_pos_embed, num_channels, dim=1)
-        query_pos_embed = query_pos_embed.unsqueeze(0).expand(batch_size, -1, -1)  # (B, Q, C)
-        target = target.unsqueeze(0).expand(batch_size, -1, -1)                    # (B, Q, C)
-        reference_points = self.reference_points(query_pos_embed).sigmoid()        # (B, Q, 1)
-        init_reference_points = reference_points
-        
+        if self.config.with_box_refine:
+            query_pos_embed = self.query_position_embeddings.weight                    # (Q, 2*C)
+            query_pos_embed, target = torch.split(query_pos_embed, num_channels, dim=1)
+            query_pos_embed = query_pos_embed.unsqueeze(0).expand(batch_size, -1, -1)  # (B, Q, C)
+            target = target.unsqueeze(0).expand(batch_size, -1, -1)                    # (B, Q, C)
+            reference_points = self.reference_points(query_pos_embed).sigmoid()        # (B, Q, 1)
+            init_reference_points = reference_points
+        else:
+            max_caption_num = max([len(l['boxes']) for l in labels]) if labels is not None else self.config.num_queries
+            gt_reference_points = torch.zeros(batch_size, max_caption_num, 2, device=device) # (B, max_N, 2)
+            for i in range(batch_size): # Iterate over each window in the batch
+                gt_reference_points[i, :len(labels[i]['boxes'])] = labels[i]['boxes']  # (start, end) format
+                
+            topk_coords_logits = inverse_sigmoid(gt_reference_points)                  # (B, max_N, 2)
+            reference_points = gt_reference_points                                     # (B, max_N, 2)
+            init_reference_points = reference_points                                   # (B, max_N, 2)
+            pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_logits)))
+            query_pos_embed, target = torch.split(pos_trans_out, num_channels, dim=2)  # (B, max_N, C), (B, max_N, C)
+            
+        self_attn_mask = torch.ones(batch_size, query_pos_embed.shape[1], device=query_pos_embed.device).bool()
         decoder_outputs = self.decoder(
             inputs_embeds=target,
             encoder_hidden_states=encoder_outputs[0],

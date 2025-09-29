@@ -21,24 +21,24 @@ from utils import ensure_cw_format
 
 @dataclass
 class DeformableDetrObjectDetectionOutput(ModelOutput):
-    loss: Optional[torch.FloatTensor] = None
+    loss: Optional[FloatTensor] = None
     loss_dict: Optional[dict] = None
-    logits: Optional[torch.FloatTensor] = None
-    pred_boxes: Optional[torch.FloatTensor] = None
+    logits: Optional[FloatTensor] = None
+    pred_boxes: Optional[FloatTensor] = None
     pred_counts: Optional[FloatTensor] = None
     pred_cap_logits: Optional[FloatTensor] = None
     pred_cap_tokens: Optional[LongTensor] = None
     auxiliary_outputs: Optional[list[dict]] = None
-    init_reference_points: Optional[torch.FloatTensor] = None
-    last_hidden_state: Optional[torch.FloatTensor] = None
-    intermediate_hidden_states: Optional[torch.FloatTensor] = None
-    intermediate_reference_points: Optional[torch.FloatTensor] = None
-    decoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
-    decoder_attentions: Optional[tuple[torch.FloatTensor]] = None
-    cross_attentions: Optional[tuple[torch.FloatTensor]] = None
-    encoder_last_hidden_state: Optional[torch.FloatTensor] = None
-    encoder_hidden_states: Optional[tuple[torch.FloatTensor]] = None
-    encoder_attentions: Optional[tuple[torch.FloatTensor]] = None
+    init_reference_points: Optional[FloatTensor] = None
+    last_hidden_state: Optional[FloatTensor] = None
+    intermediate_hidden_states: Optional[FloatTensor] = None
+    intermediate_reference_points: Optional[FloatTensor] = None
+    decoder_hidden_states: Optional[tuple[FloatTensor]] = None
+    decoder_attentions: Optional[tuple[FloatTensor]] = None
+    cross_attentions: Optional[tuple[FloatTensor]] = None
+    encoder_last_hidden_state: Optional[FloatTensor] = None
+    encoder_hidden_states: Optional[tuple[FloatTensor]] = None
+    encoder_attentions: Optional[tuple[FloatTensor]] = None
     
 
 class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
@@ -47,7 +47,6 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     Temporal detection head on top of DeformableDetrModel.
     - class head: (d_model -> num_classes) with last class 'no-object'
     - bbox head: (d_model -> 2) predicts (center, length) normalized to [0,1]
-    We do NOT use iterative box refinement (with_box_refine=False) to keep length independent of reference.
     
     Inputs:
     - pixel_values: (B, C, T)
@@ -86,34 +85,37 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         nn.init.constant_(self.bbox_head.layers[-1].weight.data, 0)
         nn.init.constant_(self.bbox_head.layers[-1].bias.data, 0)
 
-        num_pred = config.decoder_layers  # two_stage False in our temporal model
+        # num_pred = (config.decoder_layers + 1) if config.two_stage else config.decoder_layers
         if config.with_box_refine:
+            num_pred = config.decoder_layers
             self.count_head   = nn.ModuleList([deepcopy(self.count_head)   for _ in range(num_pred)])
             self.class_head   = nn.ModuleList([deepcopy(self.class_head)   for _ in range(num_pred)])
             self.bbox_head    = nn.ModuleList([deepcopy(self.bbox_head)    for _ in range(num_pred)])
             self.caption_head = nn.ModuleList([deepcopy(self.caption_head) for _ in range(num_pred)])
-            self.transformer.decoder.bbox_head = self.bbox_head # Hack implementation for iterative bounding box refinement
+            nn.init.constant_(self.bbox_head[0].layers[-1].bias.data[1:], -2)
+            self.transformer.decoder.bbox_embed = self.bbox_head # Hack implementation for iterative bounding box refinement
         else:
+            num_pred = config.decoder_layers + 1
             nn.init.constant_(self.bbox_head.layers[-1].bias.data[1:], -2)
             self.count_head   = nn.ModuleList([self.count_head   for _ in range(num_pred)])
             self.class_head   = nn.ModuleList([self.class_head   for _ in range(num_pred)])
             self.bbox_head    = nn.ModuleList([self.bbox_head    for _ in range(num_pred)])
             self.caption_head = nn.ModuleList([self.caption_head for _ in range(num_pred)])
-            self.transformer.decoder.bbox_head = None
+            self.transformer.decoder.bbox_embed = None
             
         self.loss_function = DeformableDetrForObjectDetectionLoss(config, pad_token_id=pad_token_id, weight_dict=weight_dict)
         self.post_init()
 
 
     def forward(
-        self, pixel_values: torch.FloatTensor,          # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
-        pixel_mask: Optional[torch.LongTensor] = None,  # (B, T) 1=valid, 0=pad
-        labels: Optional[list[dict]] = None, # {'class_labels': LongTensor (N_i, ), 'boxes': FloatTensor (N_i, 2), 'seq_tokens': LongTensor (N_i, L)}
-        encoder_outputs: Optional[torch.FloatTensor] = None,
+        self, pixel_values: FloatTensor,         # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
+        pixel_mask: Optional[LongTensor] = None, # (B, T) 1=valid, 0=pad
+        labels: Optional[list[dict]] = None,     # {'class_labels': LongTensor (N_i, ), 'boxes': FloatTensor (N_i, 2), 'seq_tokens': LongTensor (N_i, L)}
+        encoder_outputs: Optional[FloatTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.FloatTensor], DeformableDetrObjectDetectionOutput]:
+    ) -> Union[tuple[FloatTensor], DeformableDetrObjectDetectionOutput]:
         # Ensure targets provide (center,width). If start/end (s<e & min>=0) provided, convert here
         if labels is not None: 
             labels: list[dict] = [{
@@ -127,6 +129,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         transformer_outputs = self.transformer(
             pixel_values=pixel_values,
             pixel_mask=pixel_mask,
+            labels=labels,
             encoder_outputs=encoder_outputs,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
@@ -182,16 +185,18 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             outputs_class = self.class_head[layer](layer_hidden_states)  # (B, Q, C)
             outputs_classes.append(outputs_class)
             
-            # Box head: (B, num_queries, 2) (center, width) in [0,1]
-            delta_bbox = self.bbox_head[layer](layer_hidden_states)                      # (B, Q, 2)
-            reference = init_reference if layer == 0 else inter_references[:, layer - 1] # (B, Q, 2) if layer != 0, we use previous layer
-            bbox_reference = inverse_sigmoid(reference)                                  # (B, Q, 2) Revert to unnormalized space for box regression
-            if bbox_reference.shape[-1] == 2: delta_bbox += bbox_reference
-            elif bbox_reference.shape[-1] == 1: delta_bbox[..., :1] += bbox_reference
-            outputs_coords.append(delta_bbox.sigmoid())                                  # (B, Q, 2) in (center,width) normalized [0,1]
+            # Box head: (B, num_queries, 2) (center, width) in [0, 1]
+            reference = init_reference if layer == 0 else inter_references[:, layer - 1]   # (B, Q, 2) if layer != 0, we use previous layer
+            if self.config.with_box_refine:
+                delta_bbox = self.bbox_head[layer](layer_hidden_states)                    # (B, Q, 2)
+                bbox_reference = inverse_sigmoid(reference)                                # (B, Q, 2) Revert to unnormalized space for box regression
+                if bbox_reference.shape[-1] == 2: delta_bbox += bbox_reference
+                elif bbox_reference.shape[-1] == 1: delta_bbox[..., :1] += bbox_reference
+                outputs_coords.append(delta_bbox.sigmoid())                                # (B, Q, 2) in (center, width) normalized [0,1]
+            else: outputs_coords.append(reference) # No box refinement, just output the reference points as boxes
             
             # Caption head: align seq_tokens to queries using Hungarian matching before teacher forcing
-            if labels is not None: # Teacher forcing during training
+            if self.training: # Teacher forcing during training
                 # Match current layer predictions to targets to align per-query tokens
                 match_indices = self.matcher({'logits': outputs_class, 'pred_boxes': outputs_coords[-1]}, labels)
                 
@@ -232,11 +237,10 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         pred_cap_tokens = outputs_cap_tokens[-1]                # (B, Q, length)
 
         loss, loss_dict, auxiliary_outputs = None, None, None
-        if labels is not None: # Training mode
-            loss, loss_dict, auxiliary_outputs = self.loss_function(
-                labels, logits, pred_boxes, pred_counts, pred_cap_logits,
-                outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
-            )
+        if self.training: loss, loss_dict, auxiliary_outputs = self.loss_function(
+            labels, logits, pred_boxes, pred_counts, pred_cap_logits,
+            outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
+        )
 
         if not return_dict:
             out = (logits, pred_boxes, pred_counts, pred_cap_logits, pred_cap_tokens)
@@ -274,9 +278,17 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     batch = next(iter(train_loader))
+    video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']
     pixel_values = batch['pixel_values'].to(device)
     pixel_mask = batch['pixel_mask'].to(device)
     labels = [{k: v.to(device) for k, v in label.items()} for label in batch['labels']]
+    
+    print('Batch poses shape: ', pixel_values.shape)
+    for video_id, start_frame, end_frame, events in zip(video_ids, start_frames, end_frames, labels):
+        print(f'\nVIDEO ID: {video_id}, Start Frame: {start_frame}, End Frame: {end_frame}')
+        for i, (box, event_tokens) in enumerate(zip(events['boxes'], events['seq_tokens'])):
+            print(f'[Event {i + 1}] center={box[0]:.3f}, width={box[1]:.3f}, caption length={event_tokens.shape}:\n'
+                  f'- Tokens: {event_tokens.tolist()}\n- Text: {tokenizer.decode(event_tokens)}')
     
     # Model config
     config = DeformableDetrConfig(
@@ -296,6 +308,7 @@ if __name__ == '__main__':
         bbox_cost=5.0,
         giou_cost=2.0,
         focal_alpha=0.25,
+        with_box_refine=True, # Learnt (True) or Ground truth proposals (False) 
     )
     model = DeformableDetrForObjectDetection(
         config=config,
@@ -327,27 +340,37 @@ if __name__ == '__main__':
         
     model.eval()
     with torch.no_grad():
-        print('\n--- Inference step ---')
-        out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, return_dict=True)
-        print('- logits:', out.logits.shape)
-        print('- pred_boxes:', out.pred_boxes.shape)
-        print('- pred_counts:', out.pred_counts.shape)
-        print('- pred_cap_logits:', out.pred_cap_logits.shape)
-        print('- pred_cap_tokens:', out.pred_cap_tokens.shape)
+        if config.with_box_refine:
+            print('\n--- Inference step with learnt proposals (with_box_refine=True) ---')
+            out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, return_dict=True)
+            print('- logits:', out.logits.shape)
+            print('- pred_boxes:', out.pred_boxes.shape)
+            print('- pred_counts:', out.pred_counts.shape)
+            print('- pred_cap_logits:', out.pred_cap_logits.shape)
+            print('- pred_cap_tokens:', out.pred_cap_tokens.shape)
+            top_k, threshold = 10, 0.5 
+        else:
+            print('\n--- Inference step with ground truth proposals (with_box_refine=False) ---')
+            out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, labels=labels, return_dict=True)
+            print('- logits:', out.logits.shape)
+            print('- pred_cap_logits:', out.pred_cap_logits.shape)
+            print('- pred_cap_tokens:', out.pred_cap_tokens.shape)
+            top_k, threshold = None, 0.0
 
         results = post_process_object_detection( # Convert raw outputs to final events and captions
-            outputs=out, top_k=10, threshold=0.5,
+            outputs=out, top_k=top_k, threshold=threshold,
             target_lengths=pixel_mask.sum(dim=1).to(out.pred_boxes.dtype), # (B,)
             tokenizer=tokenizer,
         )
         print('\n--- Post-process results ---')
         for i, r in enumerate(results):
             num_events_kept = r['event_scores'].numel()
-            print(f'[Window {i}] {num_events_kept} events kept (threshold=0.5):')
+            print(f'[Window {i}] {num_events_kept} events kept (threshold={threshold}):')
             if num_events_kept == 0: continue
             for j, (score, label, event, cap_score, caption) in enumerate(zip(
                 r['event_scores'], r['event_labels'], r['event_ranges'],
                 r['event_caption_scores'], r['event_captions']
             )):
                 start, end = event[0], event[1]
-                print(f'- Event {j}: score={score:.3f}; label={label}; span=({start:.3f}; {end:.3f}); cap_score={cap_score:.3f}; text="{caption}"')
+                print(f'- Event {j + 1}: score={score:.3f}; label={label}; span=({start:.3f}; {end:.3f}); '
+                      f'cap_score={cap_score:.3f}; text="{caption}"')
