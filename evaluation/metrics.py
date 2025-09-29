@@ -5,16 +5,14 @@
 
 2) Dense captioning quality:
    - Following ActivityNet DVC style: for each IoU threshold, form matched
-	 (pred, gt) caption pairs by temporal overlap, compute BLEU-4, METEOR,
-	 and CIDEr using Hugging Face's `evaluate` where available, 
-     then average scores across thresholds.
+	 (pred, gt) caption pairs by temporal overlap, compute BLEU-4, METEOR, and CIDEr 
+	 using Hugging Face's `evaluate` where available, then average scores across thresholds.
    - Additionally, compute SODA_c-like overall storytelling F1 using a
 	 dynamic-programming assignment over (IoU-masked) caption similarities.
 
 3) Paragraph-level captioning quality:
-   - For each window, sort predicted captions by start time and join them
-	 into a paragraph; compare against ground-truth paragraphs aggregated
-	 the same way; report BLEU-4, METEOR, and CIDEr.
+   - For each window, sort predicted captions by start time and join them into a paragraph; 
+	 compare against ground-truth paragraphs aggregated the same way; report BLEU-4, METEOR, and CIDEr.
 
 Expected inputs from Trainer (with eval_do_concat_batches=True, batch_eval_metrics=False):
 - evaluation_results.predictions: either a dict-like object with keys
@@ -49,7 +47,8 @@ from .soda_c import meteor_similarity_matrix, chased_dp_assignment
 
 
 def compute_metrics(
-    evaluation_results, # EvalPrediction will be the whole dataset (a big batch of concatenated batches)
+    evaluation_results: EvalPrediction, # EvalPrediction will be the whole dataset (a big batch of concatenated batches)
+    ranking_temperature: float = 2.0,   # Exponent T in caption score normalization by length^T
 	alpha: float = 0.3, # Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score
     top_k: int = 10,    # Should be num_queries during training
 	temporal_iou_thresholds: Sequence[float] = (0.3, 0.5, 0.7, 0.9),
@@ -108,10 +107,11 @@ def compute_metrics(
         gt_boxes_cw = gt_boxes_cw if isinstance(gt_boxes_cw, torch.Tensor) else torch.as_tensor(gt_boxes_cw)
         gt_boxes_se = cw_to_se(gt_boxes_cw) if gt_boxes_cw.numel() else gt_boxes_cw
         gt_events = [tuple(map(float, box.tolist())) for box in gt_boxes_se]
-        texts = [
-            tokenizer.decode(event_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True)
-            for event_tokens in window.get('seq_tokens', []).cpu().numpy()
-        ]
+        texts = [tokenizer.decode( 
+            np.where(event_tokens == -100, tokenizer.pad_token_id, event_tokens), # Replace -100 (used by HF) with pad token id
+            skip_special_tokens=True, clean_up_tokenization_spaces=True
+        ) for event_tokens in window.get('seq_tokens', []).cpu().numpy()]
+        
         # Keep aligned to boxes count (truncate if mismatch)
         m = min(len(gt_events), len(texts))
         batch_gt_events.append(gt_events[:m])

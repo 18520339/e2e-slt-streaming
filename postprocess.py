@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 from torch import Tensor, TensorType
 from transformers import AutoTokenizer
@@ -71,10 +72,10 @@ def post_process_object_detection(
         
         pred_cap_tokens = pred_cap_tokens.detach().cpu().numpy()                                       # (batch_size, num_queries, max_caption_len)
         pred_cap_tokens = [pred_cap_tokens[i][topk_boxes[i]] for i in range(pred_cap_tokens.shape[0])] # (batch_size, k_value, max_caption_len)
-        pred_captions = [                                                                              # (batch_size, k_value)
-            tokenizer.batch_decode(topk_cap_tokens, skip_special_tokens=True, clean_up_tokenization_spaces=True) 
-            for topk_cap_tokens in pred_cap_tokens
-        ]                                                      
+        pred_captions = [tokenizer.batch_decode(                                                       # (batch_size, k_value) 
+            np.where(topk_cap_tokens == -100, tokenizer.pad_token_id, topk_cap_tokens),                # Replace -100 (used by HF) with pad token id
+            skip_special_tokens=True, clean_up_tokenization_spaces=True
+        ) for topk_cap_tokens in pred_cap_tokens]                                                     
     else: # No caption tokens predicted, so fill with empty strings and very low scores
         caption_scores = [[-1e5] * k_value] * out_logits.shape[0]                                      # (batch_size, k_value)
         pred_captions = [[''] * k_value] * out_logits.shape[0]                                         # (batch_size, k_value)
