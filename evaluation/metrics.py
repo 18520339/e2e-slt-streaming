@@ -107,10 +107,12 @@ def compute_metrics(
         gt_boxes_cw = gt_boxes_cw if isinstance(gt_boxes_cw, torch.Tensor) else torch.as_tensor(gt_boxes_cw)
         gt_boxes_se = cw_to_se(gt_boxes_cw) if gt_boxes_cw.numel() else gt_boxes_cw
         gt_events = [tuple(map(float, box.tolist())) for box in gt_boxes_se]
-        texts = [tokenizer.decode( 
-            np.where(event_tokens == -100, tokenizer.pad_token_id, event_tokens), # Replace -100 (used by HF) with pad token id
+        
+        seq_tokens = window.get('seq_tokens', []).cpu().numpy()
+        texts = tokenizer.batch_decode( # Decode all at once
+            np.where(seq_tokens == -100, tokenizer.pad_token_id, seq_tokens), # Replace -100 (used by HF) with pad token id
             skip_special_tokens=True, clean_up_tokenization_spaces=True
-        ) for event_tokens in window.get('seq_tokens', []).cpu().numpy()]
+        ) if len(seq_tokens) else []
         
         # Keep aligned to boxes count (truncate if mismatch)
         m = min(len(gt_events), len(texts))
