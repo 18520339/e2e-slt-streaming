@@ -1,5 +1,4 @@
 from pathlib import Path
-
 try:
     import webvtt
     USE_WEBVTT = True
@@ -21,7 +20,7 @@ VTT_DIR = DATA_ROOT / 'automatic_annotations/signing_aligned_subtitles/auto_sat_
 FPS = 12.5 # Downsampled FPS from original 25fps
 MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
 MAX_SUB_DURATION = 20.0 # From LiTFiC, seconds
-WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `stats.ipynb`
+WINDOW_DURATION_SECONDS = 18 # This will be determined by the analysis in `eda.ipynb`
 WIDTH = HEIGHT = 444  # Original video frame size in BOBSL
 
 # -- Pose Preprocessing (CoSign Inspired) -----------------------------------
