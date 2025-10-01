@@ -212,35 +212,30 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                     aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
                 
                 cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, reference, transformer_outputs_for_captioner)
-                cap_tokens = aligned_tokens
+                outputs_cap_probs.append(cap_probs)               # (B, Q, length, vocab_size + 1)
+                outputs_cap_tokens.append(aligned_tokens)         # (B, Q, length)
                 
-            else: # Greedy or multinomial sampling during inference
-                if layer == hidden_states.shape[1] - 1: # Only predict captions for last layer
-                    cap_probs, cap_tokens = self.caption_head[layer].sample(layer_hidden_states, reference, transformer_outputs_for_captioner)
-                else: # For other layers, just append empty tensors
-                    cap_probs = torch.zeros(B, Q, self.caption_head[layer].max_caption_len, device=device, dtype=torch.float32)
-                    cap_tokens = torch.zeros(B, Q, self.caption_head[layer].max_caption_len, device=device, dtype=torch.long)
-                    
-            outputs_cap_probs.append(cap_probs)                 # (B, Q, length, vocab_size + 1)
-            outputs_cap_tokens.append(cap_tokens)               # (B, Q, length)
-
-        outputs_classes    = torch.stack(outputs_classes)       # (L, B, Q, C)
-        outputs_coords     = torch.stack(outputs_coords)        # (L, B, Q, 2)
-        outputs_counts     = torch.stack(outputs_counts)        # (L, B, Q, num_queries + 1)
-        outputs_cap_probs  = torch.stack(outputs_cap_probs)     # (L, B, Q, length, vocab_size + 1) in training, (L, B, Q, length) in inference
-        outputs_cap_tokens = torch.stack(outputs_cap_tokens)    # (L, B, Q, length)
+        outputs_classes = torch.stack(outputs_classes)            # (L, B, Q, C)
+        outputs_coords  = torch.stack(outputs_coords)             # (L, B, Q, 2)
+        outputs_counts  = torch.stack(outputs_counts)             # (L, B, Q, num_queries + 1)
+        logits          = outputs_classes[-1]                     # (B, Q, C)
+        pred_boxes      = outputs_coords[-1]                      # (B, Q, 2) (center,width) normalized
+        pred_counts     = outputs_counts[-1]                      # (B, num_queries + 1)
         
-        logits          = outputs_classes[-1]                   # (B, Q, C)
-        pred_boxes      = outputs_coords[-1]                    # (B, Q, 2) (center,width) normalized
-        pred_counts     = outputs_counts[-1]                    # (B, num_queries + 1)
-        pred_cap_logits = outputs_cap_probs[-1]                 # (B, Q, length, vocab_size + 1)
-        pred_cap_tokens = outputs_cap_tokens[-1]                # (B, Q, length)
-
         loss, loss_dict, auxiliary_outputs = None, None, None
-        if labels is not None: loss, loss_dict, auxiliary_outputs = self.loss_function(
-            labels, logits, pred_boxes, pred_counts, pred_cap_logits,
-            outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
-        )
+        if labels is not None:
+            outputs_cap_probs  = torch.stack(outputs_cap_probs)   # (L, B, Q, length, vocab_size + 1)
+            outputs_cap_tokens = torch.stack(outputs_cap_tokens)  # (L, B, Q, length)
+            pred_cap_logits = outputs_cap_probs[-1]               # (B, Q, length, vocab_size + 1)
+            pred_cap_tokens = outputs_cap_tokens[-1]              # (B, Q, length)
+            
+            loss, loss_dict, auxiliary_outputs = self.loss_function(
+                labels, logits, pred_boxes, pred_counts, pred_cap_logits,
+                outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
+            )
+            
+        if not self.training: # Greedy or multinomial sampling for last layer during inference (B, Q, Length)
+            pred_cap_logits, pred_cap_tokens = self.caption_head[-1].sample(layer_hidden_states, reference, transformer_outputs_for_captioner)
 
         if not return_dict:
             out = (logits, pred_boxes, pred_counts, pred_cap_logits, pred_cap_tokens)

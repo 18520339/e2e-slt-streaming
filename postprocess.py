@@ -44,7 +44,6 @@ def post_process_object_detection(
     '''
     out_logits, out_bbox = outputs.logits, outputs.pred_boxes
     pred_cap_tokens, pred_cap_logits = outputs.pred_cap_tokens, outputs.pred_cap_logits
-    pred_counts = outputs.pred_counts.argmax(dim=-1).clamp(min=1)
     
     if target_lengths is not None:
         if len(out_logits) != len(target_lengths):
@@ -84,6 +83,6 @@ def post_process_object_detection(
         'event_scores': s[s > threshold], 
         'event_labels': l[s > threshold], 
         'event_ranges': b[s > threshold], 
-        'event_caption_scores': [c[i] for i in range(len(c)) if s[i] > threshold] if len(c) else [],
-        'event_captions': [t[i] for i in range(len(t)) if s[i] > threshold] if len(t) else [],
+        'event_caption_scores': c[s > threshold],
+        'event_captions': [t[i] for i in range(len(t)) if s[i] > threshold],
     } for s, l, b, c, t in zip(scores, labels, boxes, caption_scores, pred_captions)]

@@ -81,10 +81,9 @@ training_args = TrainingArguments(      # Find out more at https://huggingface.c
     greater_is_better=False,            # Lower loss / Higher map is better
     fp16=torch.cuda.is_available(),     # Enable mixed-precision training if a CUDA GPU is available (faster, less memory)
     gradient_accumulation_steps=2,      # Updates steps to accumulate gradients for, before performing backward pass
-    # eval_accumulation_steps=10,         # Number of steps after which predictions are sent back to the CPU (slower but less memory)
     dataloader_num_workers=2,           # Number of subprocesses to use for data loading
     # remove_unused_columns=False,        # Whether to automatically remove columns unused by the model forward method
-    # save_safetensors=False,             # Disable safe serialization to avoid the error
+    save_safetensors=False,             # Disable safe serialization to avoid the error
     report_to='none',                   # Whether to report to wandb
 )
 
