@@ -196,7 +196,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             else: outputs_coords.append(reference) # No box refinement, just output the reference points as boxes
             
             # Caption head: align seq_tokens to queries using Hungarian matching before teacher forcing
-            if self.training: # Teacher forcing during training
+            if labels is not None: # Teacher forcing during training
                 # Match current layer predictions to targets to align per-query tokens
                 match_indices = self.matcher({'logits': outputs_class, 'pred_boxes': outputs_coords[-1]}, labels)
                 
@@ -237,7 +237,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         pred_cap_tokens = outputs_cap_tokens[-1]                # (B, Q, length)
 
         loss, loss_dict, auxiliary_outputs = None, None, None
-        if self.training: loss, loss_dict, auxiliary_outputs = self.loss_function(
+        if labels is not None: loss, loss_dict, auxiliary_outputs = self.loss_function(
             labels, logits, pred_boxes, pred_counts, pred_cap_logits,
             outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
         )
