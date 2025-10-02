@@ -155,11 +155,13 @@ class DeformableCaptioner(nn.Module):
         state, reference_points = self.prepare_for_captioning(num_queries, reference_points, transformer_outputs)
         num_events = batch_size * num_queries
         
-        seq_log_probs, seq_tokens = [], [] # Initialize with <BOS> for all events (B*Q)
         token = torch.full((num_events,), self.bos_token_id, dtype=torch.long, device=decoder_hidden_states.device)
+        seq_log_probs = torch.full((num_events, self.max_caption_len), 0.0, dtype=torch.float, device=decoder_hidden_states.device)
+        seq_tokens = torch.full((num_events, self.max_caption_len), self.pad_token_id, dtype=torch.long, device=decoder_hidden_states.device)
+        seq_tokens[:, 0] = token # Initialize with <BOS> for all events (B*Q)
         done = torch.zeros_like(token, dtype=torch.bool)  # (B*Q,)
 
-        for t in range(self.max_caption_len):
+        for t in range(1, self.max_caption_len):
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
             if sample_max: # Greedy decoding
                 step_log_probs, next_token = torch.max(output.data, 1)
@@ -172,14 +174,9 @@ class DeformableCaptioner(nn.Module):
             done = done | (next_token == self.eos_token_id) | (next_token == self.pad_token_id)
             if done.all(): break # Stop when all finished
             next_token = next_token * (~done).long() # Mask out finished sequences
-            seq_log_probs.append(step_log_probs)
-            seq_tokens.append(next_token)
+            seq_log_probs[:, t] = step_log_probs
+            seq_tokens[:, t] = next_token
             token = next_token # Feed next token
 
-        if len(seq_tokens) == 0: return [], []
-        seq_log_probs = torch.stack(seq_log_probs, dim=1)  # (B*Q, T)
-        seq_tokens = torch.stack(seq_tokens, dim=1)        # (B*Q, T)
-
-        # Return structured (B, Q, T)
-        T = seq_tokens.shape[-1]
+        T = seq_tokens.shape[-1] # Return structured (B, Q, T)
         return seq_log_probs.view(batch_size, num_queries, T), seq_tokens.view(batch_size, num_queries, T)
