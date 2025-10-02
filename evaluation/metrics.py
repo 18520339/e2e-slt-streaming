@@ -74,8 +74,10 @@ def compute_metrics(
 	temporal_iou_thresholds: Sequence[float] = (0.3, 0.5, 0.7, 0.9),
     tokenizer: AutoTokenizer = None,
 ) -> Dict[str, float]:
-    # Postprocess to get top-k per window, plus caption texts/scores
+    metrics: Dict[str, float] = {}
     predictions = ModelOutput(*evaluation_results.predictions)
+    
+    # Postprocess to get top-k per window, plus caption texts/scores
     post_processed_outputs = post_process_object_detection(
         outputs=predictions,
         top_k=top_k,
@@ -147,12 +149,18 @@ def compute_metrics(
             p, r = precision_recall_at_tiou(pred_events, gt_events, tiou)
             p_list.append(p)
             r_list.append(r)
+            
         precs.append(float(np.mean(p_list) if p_list else 0.0))
         recs.append(float(np.mean(r_list) if r_list else 0.0))
+        metrics[f'loc_precision@{tiou:.1f}'] = precs[-1]
+        metrics[f'loc_recall@{tiou:.1f}'] = recs[-1]
+        metrics[f'loc_f1@{tiou:.1f}'] = 2 * precs[-1] * recs[-1] / (precs[-1] + recs[-1]) if (precs[-1] + recs[-1]) > 0 else 0.0
         
     loc_precision = float(np.mean(precs) if precs else 0.0)
     loc_recall = float(np.mean(recs) if recs else 0.0)
-    loc_f1 = 2 * loc_precision * loc_recall / (loc_precision + loc_recall) if (loc_precision + loc_recall) > 0 else 0.0
+    metrics['loc_precision_avg'] = loc_precision
+    metrics['loc_recall_avg'] = loc_recall
+    metrics['loc_f1_avg'] = 2 * loc_precision * loc_recall / (loc_precision + loc_recall) if (loc_precision + loc_recall) > 0 else 0.0
 
     # 2) Dense captioning metrics across IoU thresholds
     dense_scores_accum = {'bleu': [], 'meteor': [], 'cider': []}
@@ -170,21 +178,20 @@ def compute_metrics(
         text_metrics = compute_text_metrics(all_preds, all_refs)
         for metric_name in dense_scores_accum:
             dense_scores_accum[metric_name].append(text_metrics.get(metric_name, 0.0))
-
-    dense_bleu4 = float(np.mean(dense_scores_accum['bleu4'])) if dense_scores_accum['bleu4'] else 0.0
-    dense_meteor = float(np.mean(dense_scores_accum['meteor'])) if dense_scores_accum['meteor'] else 0.0
-    dense_cider = float(np.mean(dense_scores_accum['cider'])) if dense_scores_accum['cider'] else 0.0
+            metrics[f'dense_{metric_name}@{tiou:.1f}'] = dense_scores_accum[metric_name][-1]
+            
+    metrics['dense_bleu4_avg'] = float(np.mean(dense_scores_accum['bleu4'])) if dense_scores_accum['bleu4'] else 0.0
+    metrics['dense_meteor_avg'] = float(np.mean(dense_scores_accum['meteor'])) if dense_scores_accum['meteor'] else 0.0
+    metrics['dense_cider_avg'] = float(np.mean(dense_scores_accum['cider'])) if dense_scores_accum['cider'] else 0.0
 
     # SODA_c-like storytelling score (DP over IoU-masked METEOR similarity)
-    soda_prec, soda_rec, soda_f1 = [], [], []
+    soda_f1 = []
     for t in temporal_iou_thresholds:
-        p_list, r_list, f_list = [], [], []
+        f_list = []
         for pred_events, pred_captions, gt_events, gt_captions in zip(
             batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
         ):
             if len(pred_events) == 0 or len(gt_events) == 0:
-                p_list.append(0.0)
-                r_list.append(0.0)
                 f_list.append(0.0)
                 continue
             
@@ -206,15 +213,11 @@ def compute_metrics(
             n_g, n_p = score_mat.shape
             p = max_score / max(1, n_p)
             r = max_score / max(1, n_g)
-            f = 2 * p * r / (p + r) if (p + r) > 0 else 0.0
-            p_list.append(p)
-            r_list.append(r)
-            f_list.append(f)
+            f_list.append(2 * p * r / (p + r) if (p + r) > 0 else 0.0)
 
-        soda_prec.append(float(np.mean(p_list) if p_list else 0.0))
-        soda_rec.append(float(np.mean(r_list) if r_list else 0.0))
         soda_f1.append(float(np.mean(f_list) if f_list else 0.0))
-    soda_c = float(np.mean(soda_f1) if soda_f1 else 0.0)
+        metrics[f'soda_c_f1@{t:.1f}'] = soda_f1[-1]
+    metrics['soda_c_f1_avg'] = float(np.mean(soda_f1) if soda_f1 else 0.0)
 
     # 3) Paragraph-level metrics
     para_preds: List[str] = []
@@ -231,22 +234,7 @@ def compute_metrics(
         para_refs.append([para_gt if para_gt else ''])  # single reference
 
     para_scores = compute_text_metrics(para_preds, para_refs)
-    para_bleu4 = para_scores.get('bleu4', 0.0)
-    para_meteor = para_scores.get('meteor', 0.0)
-    para_cider = para_scores.get('cider', 0.0)
-
-    return {
-        # Localization
-        'loc_precision': loc_precision,
-        'loc_recall': loc_recall,
-        'loc_f1': loc_f1,
-        # Dense captioning (averaged over IoU thresholds)
-        'dense_bleu4': dense_bleu4,
-        'dense_meteor': dense_meteor,
-        'dense_cider': dense_cider,
-        'soda_c': soda_c, # SODA_c overall storytelling
-        # Paragraph
-        'para_bleu4': para_bleu4,
-        'para_meteor': para_meteor,
-        'para_cider': para_cider,
-    }
+    metrics['para_bleu4'] = para_scores.get('bleu4', 0.0)
+    metrics['para_meteor'] = para_scores.get('meteor', 0.0)
+    metrics['para_cider'] = para_scores.get('cider', 0.0)
+    return metrics
