@@ -32,6 +32,7 @@ Notes:
 '''
 import torch
 import numpy as np
+from dataclasses import dataclass
 from typing import Sequence, Union, Dict, List, Tuple
 from transformers import AutoTokenizer, EvalPrediction
 
@@ -46,6 +47,25 @@ from .helpers import (
 from .soda_c import meteor_similarity_matrix, chased_dp_assignment
 
 
+@dataclass
+class ModelOutput:
+    logits: torch.FloatTensor
+    pred_boxes: torch.FloatTensor
+    pred_counts: torch.FloatTensor
+    pred_cap_tokens: torch.FloatTensor
+    pred_cap_logits: torch.FloatTensor
+
+
+def preprocess_logits_for_metrics(logits_tuple, labels):
+    # https://discuss.huggingface.co/t/cuda-out-of-memory-when-using-trainer-with-compute-metrics/2941/29
+    logits = logits_tuple[1].detach().cpu()
+    pred_boxes = logits_tuple[2].detach().cpu()
+    pred_counts = logits_tuple[3].detach().cpu()
+    pred_cap_logits = logits_tuple[3].detach().cpu()
+    pred_cap_tokens = logits_tuple[4].detach().cpu()
+    return logits, pred_boxes, pred_counts, pred_cap_logits, pred_cap_tokens
+
+
 def compute_metrics(
     evaluation_results: EvalPrediction, # EvalPrediction will be the whole dataset (a big batch of concatenated batches)
     ranking_temperature: float = 2.0,   # Exponent T in caption score normalization by length^T
@@ -55,7 +75,7 @@ def compute_metrics(
     tokenizer: AutoTokenizer = None,
 ) -> Dict[str, float]:
     # Postprocess to get top-k per window, plus caption texts/scores
-    predictions, targets = evaluation_results.predictions, evaluation_results.label_ids
+    predictions = ModelOutput(*evaluation_results.predictions)
     post_processed_outputs = post_process_object_detection(
         outputs=predictions,
         top_k=top_k,

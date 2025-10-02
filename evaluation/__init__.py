@@ -1,1 +1,1 @@
-from .metrics import compute_metrics
+from .metrics import preprocess_logits_for_metrics, compute_metrics

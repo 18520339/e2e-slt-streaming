@@ -6,9 +6,9 @@ from transformers import (
     TrainingArguments, Trainer,
     EarlyStoppingCallback,
 )
-from loader import DVCDataset
+from loader import DVCDataset, trainer_collate_fn
 from pdvc import DeformableDetrForObjectDetection
-from evaluation import compute_metrics
+from evaluation import preprocess_logits_for_metrics, compute_metrics
 from config import *
 
 MAX_CAPTION_LEN = 64
@@ -87,31 +87,21 @@ training_args = TrainingArguments(      # Find out more at https://huggingface.c
     report_to='none',                   # Whether to report to wandb
 )
 
-# Train the Model
-def trainer_collate_fn(batch):
-    _, _, _, poses_tensor, frame_masks, labels = zip(*batch)
-    T = poses_tensor[0].shape[0]
-    assert all(p.shape[0] == T for p in poses_tensor), 'Variable T in batch; use batch_size=1 or add padding.'
-    return {
-        'pixel_values': torch.stack(poses_tensor), # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
-        'pixel_mask': torch.stack(frame_masks),    # True for real frames, False for padding
-        'labels': labels # List of dicts (includes 'frame_mask')
-    }
-
 trainer = Trainer(
     model=model,
     args=training_args,
     train_dataset=train_dataset,
     eval_dataset=val_dataset,
     data_collator=trainer_collate_fn,
-    # compute_metrics=partial(
-    #     compute_metrics,
-    #     ranking_temperature=2.0, # Exponent T in caption score normalization by length^T
-    #     alpha=0.3, # Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score
-    #     top_k=10,  # Should be num_queries during training
-    #     temporal_iou_thresholds=(0.3, 0.5, 0.7, 0.9),
-    #     tokenizer=tokenizer,
-    # ),
+    preprocess_logits_for_metrics=preprocess_logits_for_metrics,
+    compute_metrics=partial(
+        compute_metrics,
+        ranking_temperature=2.0, # Exponent T in caption score normalization by length^T
+        alpha=0.3, # Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score
+        top_k=10,  # Should be num_queries during training
+        temporal_iou_thresholds=(0.3, 0.5, 0.7, 0.9),
+        tokenizer=tokenizer,
+    ),
     callbacks=[EarlyStoppingCallback(early_stopping_patience=10)]
 )
 trainer.train()

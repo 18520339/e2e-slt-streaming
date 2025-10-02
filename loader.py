@@ -280,6 +280,17 @@ def collate_fn(batch):
     }
     
 
+def trainer_collate_fn(batch):
+    _, _, _, poses_tensor, frame_masks, labels = zip(*batch)
+    T = poses_tensor[0].shape[0]
+    assert all(p.shape[0] == T for p in poses_tensor), 'Variable T in batch; use batch_size=1 or add padding.'
+    return {
+        'pixel_values': torch.stack(poses_tensor), # [B(N), T, 77(K), 3(C)] Channel-last for CoSign backbone
+        'pixel_mask': torch.stack(frame_masks),    # True for real frames, False for padding
+        'labels': labels # List of dicts (includes 'frame_mask')
+    }
+    
+
 def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=20, 
                max_tries=10, min_events=1, tokenizer=None, load_by='window', seed=42):
     dataset = DVCDataset( # Create a data loader for a specific split
