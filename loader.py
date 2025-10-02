@@ -26,7 +26,7 @@ class DVCDataset(Dataset):
                      load full video poses at once and slice
             seed: For reproducibility in random sampling
         '''
-        assert split in ['train', 'val', 'test'], f"Split must be 'train', 'val', or 'test', but got {split}"
+        # assert split in ['train', 'val', 'test'], f"Split must be 'train', 'val', or 'test', but got {split}"
         self.split = split
         self.window_size_frames = int(WINDOW_DURATION_SECONDS * FPS)
         self.stride = int(self.window_size_frames * stride_ratio)

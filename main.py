@@ -1,4 +1,5 @@
 import gc
+import sys
 import torch
 from functools import partial
 from transformers import (
@@ -13,6 +14,7 @@ from config import *
 
 MAX_CAPTION_LEN = 64
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+sys.setrecursionlimit(2000) # Give Soda_c more time for recursion
 
 # Data Loading
 tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base', use_fast=True)
@@ -24,8 +26,8 @@ val_dataset = DVCDataset(
     split='val', stride_ratio=0.9, max_caption_len=MAX_CAPTION_LEN,
     min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
 )
-print(f'Train loader: {len(train_dataset)} samples')
-print(f'Val loader: {len(val_dataset)} samples')
+print(f'Train dataset: {len(train_dataset)} samples')
+print(f'Val dataset: {len(val_dataset)} samples')
 
 # Model Setup
 config = DeformableDetrConfig(
@@ -66,23 +68,25 @@ print(f'Model initialized with {total_params / 1e6:.2f}M parameters')
 training_args = TrainingArguments(      # Find out more at https://huggingface.co/docs/transformers/en/main_classes/trainer
     output_dir='/tmp',                  # Directory for checkpoints and logs
     num_train_epochs=20,                # Total number of training epochs
-    auto_find_batch_size=True,          # Find a batch size that will fit into memory automatically through exponential decay, avoiding CUDA OOM
-    learning_rate=5e-5,                 # Initial learning rate
+    # auto_find_batch_size=True,          # Find batch size that fit memory via exponential decay, avoiding CUDA OOM
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    learning_rate=2e-4,                 # Initial learning rate
     weight_decay=1e-4,                  # Regularization
     warmup_ratio=0.05,
     lr_scheduler_type='cosine_with_restarts',
     lr_scheduler_kwargs=dict(num_cycles=1),
+    # eval_delay=5,                       # Number of epochs to wait for before the first evaluation can be performed
     eval_strategy='epoch',              # Evaluate after each epoch
     save_strategy='epoch',
     save_total_limit=1,
     logging_strategy='epoch',           #
-    load_best_model_at_end=True,        # Load the best model based on validation loss/map
-    metric_for_best_model='eval_loss',  # Use validation loss/map for early stopping
-    greater_is_better=False,            # Lower loss / Higher map is better
+    load_best_model_at_end=True,        # Load the best model based on validation loss/Bleu
+    metric_for_best_model='eval_loss',  # Use validation loss/Bleu for early stopping
+    greater_is_better=False,            # Lower loss / Higher Bleu is better
     fp16=torch.cuda.is_available(),     # Enable mixed-precision training if a CUDA GPU is available (faster, less memory)
     gradient_accumulation_steps=2,      # Updates steps to accumulate gradients for, before performing backward pass
     dataloader_num_workers=2,           # Number of subprocesses to use for data loading
-    # remove_unused_columns=False,        # Whether to automatically remove columns unused by the model forward method
     save_safetensors=False,             # Disable safe serialization to avoid the error
     report_to='none',                   # Whether to report to wandb
 )
@@ -106,3 +110,8 @@ trainer = Trainer(
 )
 trainer.train()
 trainer.save_model(CHECKPOINT_DIR)
+
+# Cleanup to free memory
+del tokenizer, train_dataset, val_dataset, model, trainer
+gc.collect()
+torch.cuda.empty_cache()

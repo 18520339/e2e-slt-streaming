@@ -219,7 +219,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         outputs_coords  = torch.stack(outputs_coords)             # (L, B, Q, 2)
         outputs_counts  = torch.stack(outputs_counts)             # (L, B, Q, num_queries + 1)
         logits          = outputs_classes[-1]                     # (B, Q, C)
-        pred_boxes      = outputs_coords[-1]                      # (B, Q, 2) (center,width) normalized
+        pred_boxes      = outputs_coords[-1]                      # (B, Q, 2) (center, width) normalized
         pred_counts     = outputs_counts[-1]                      # (B, num_queries + 1)
         
         loss, loss_dict, auxiliary_outputs = None, None, None

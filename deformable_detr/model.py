@@ -207,7 +207,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             max_caption_num = max([len(l['boxes']) for l in labels]) if labels is not None else self.config.num_queries
             gt_reference_points = torch.zeros(batch_size, max_caption_num, 2, device=device) # (B, max_N, 2)
             for i in range(batch_size): # Iterate over each window in the batch
-                gt_reference_points[i, :len(labels[i]['boxes'])] = labels[i]['boxes']  # (start, end) format
+                gt_reference_points[i, :len(labels[i]['boxes'])] = labels[i]['boxes']  # (center, width) in [0,1]
                 
             topk_coords_logits = inverse_sigmoid(gt_reference_points)                  # (B, max_N, 2)
             reference_points = gt_reference_points                                     # (B, max_N, 2)
