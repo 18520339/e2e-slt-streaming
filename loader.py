@@ -10,15 +10,15 @@ from config import *
 
 
 class DVCDataset(Dataset):
-    def __init__(self, split, stride_ratio=0.5, max_caption_len=20, max_tries=10, 
+    def __init__(self, split, stride_ratio=0.5, max_tries=10, max_caption_len=20, 
                  min_events=1, tokenizer=None, load_by='window', seed=42):
         '''
         PyTorch Dataset for DVC with on-the-fly sliding window sampling.
         Args:
             split: 'train', 'val', or 'test'
-            stride_ratio: For val/test sequential sampling (e.g., 0.5 for 50% overlap)
+            stride_ratio: For val/test sequential sampling (e.g., 0.5 for 50% overlap). Only used in val/test.
+            max_tries: Max resamples for train windows with < min_events. Only used in train.
             max_caption_len: Max caption token length for padding/truncation
-            max_tries: Max resamples for train windows with < min_events
             min_events: Min full events (subtitles) in a window
             tokenizer: HuggingFace tokenizer for text processing
             load_by: 'window' (default) or 'video' - whether to
@@ -117,21 +117,25 @@ class DVCDataset(Dataset):
         if self.split == 'train': # idx is video index; sample random window
             video_id = self.video_ids[idx]
             max_start_frame = self.video_metadata[video_id]['total_frames'] - self.window_size_frames
-
-            if max_start_frame <= 0: # Video is shorter than window, so we take the whole thing and will pad later
-                window_start_frame = 0
-                window_end_frame = self.video_metadata[video_id]['total_frames']
-            else: # Randomly select a start frame for the window
-                for try_num in range(self.max_tries):
-                    window_start_frame = np.random.randint(0, max_start_frame)
-                    window_end_frame = window_start_frame + self.window_size_frames
-                    
-                    window = self._get_window_data(video_id, window_start_frame, window_end_frame)
-                    if window[-1]['class_labels'].shape[0] >= self.min_events: # Check events
-                        # print(f'Sampled valid window for {video_id} (try {try_num+1})')
-                        return window
-                print(f'Warning: Could not find window with >= {self.min_events} events for {video_id} after {self.max_tries} tries')
-            return self._get_window_data(video_id, window_start_frame, window_end_frame)  # Return last anyway
+            
+            if max_start_frame <= 0: # Video shorter than window: take whole video (will be padded later)
+                return self._get_window_data(video_id, 0, self.video_metadata[video_id]['total_frames'])
+            
+            # Randomly select a start frame for the window
+            for try_num in range(self.max_tries):
+                window_start_frame = np.random.randint(0, max_start_frame)
+                window_end_frame = window_start_frame + self.window_size_frames
+                
+                window = self._get_window_data(video_id, window_start_frame, window_end_frame)
+                if window[-1]['class_labels'].shape[0] >= self.min_events: # Check events
+                    # print(f'Sampled valid window for {video_id} (try {try_num+1})')
+                    return window
+                
+            print(f'Warning: Could not find window with >= {self.min_events} events for {video_id} after {self.max_tries} tries\n'
+                  f'=> Fallback: pick a window that guarantees >= min_events if possible, '
+                  f'otherwise the densest window (max contained events) within window size.')
+            fallback_start, fallback_end = self._sample_window_with_min_events(video_id)
+            return self._get_window_data(video_id, fallback_start, fallback_end)
 
         # --- Fixed Window for Evaluation ---
         else: # idx is global window index; find corresponding video_id and local window
@@ -212,7 +216,70 @@ class DVCDataset(Dataset):
 
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels
+    
+    
+    def _sample_window_with_min_events(self, video_id):
+        ''' Fallback sampler:
+        - Prefer windows that fully contain at least min_events subtitles.
+        - If none exist, pick the densest window (max contained events) within window size.
+        - As a last resort, fall back to a random/edge window.
+        Returns (start_frame, end_frame).
+        '''
+        total = self.video_metadata[video_id]['total_frames']
+        max_start_frame = max(0, total - self.window_size_frames)
 
+        events = [] # Collect valid events (consistent with label filtering)
+        for sub in self.video_metadata[video_id]['subtitles']:
+            if MIN_SUB_DURATION <= sub['duration'] <= MAX_SUB_DURATION:
+                sub_start_frame = int(sub['start'] * FPS)
+                sub_end_frame = int(sub['end'] * FPS)
+                # Clamp to video bounds
+                sub_start_frame = max(0, min(sub_start_frame, total))
+                sub_end_frame = max(0, min(sub_end_frame, total))
+                if sub_end_frame > sub_start_frame: events.append((sub_start_frame, sub_end_frame))
+
+        if not events: # No valid events -> random window (or whole video if shorter than window_size_frames)
+            if max_start_frame > 0:
+                start = np.random.randint(0, max_start_frame + 1)
+                return start, start + self.window_size_frames
+            return 0, total  # short video
+
+        events.sort(key=lambda x: x[0])
+        num_events = len(events)
+
+        # Two-pointer sweep to find clusters fitting within window_size_frames
+        j, candidates = 0, [] # ranges [low, high] of valid window_start ensuring full containment
+        best_count, best_range = 0, None
+        for i in range(num_events):
+            if j < i: j = i
+            while j < num_events and (events[j][1] - events[i][0]) <= self.window_size_frames:  
+                j += 1 # Expand j while the span fits within window size
+                
+            j_valid = j - 1 # Last index that still fits
+            if j_valid >= i:
+                count = j_valid - i + 1
+                # Valid start range so that [start, start + window_size_frames] fully contains [events[i].start, events[j_valid].end]
+                low = max(0, events[j_valid][1] - self.window_size_frames)
+                high = min(events[i][0], max_start_frame)
+                if low <= high:
+                    if count >= self.min_events: candidates.append((low, high))
+                    if count > best_count: best_count, best_range = count, (low, high)
+        
+        if candidates: # Prefer any range that yields >= min_events
+            low, high = candidates[np.random.randint(0, len(candidates))]
+            start = low if high <= low else np.random.randint(low, high + 1)
+            return start, start + self.window_size_frames
+
+        if best_range is not None: # Otherwise, take the densest fitting cluster (max events)
+            low, high = best_range
+            start = low if high <= low else np.random.randint(low, high + 1)
+            return start, start + self.window_size_frames
+
+        if max_start_frame > 0: # If no cluster fits (e.g., all events longer than window_size_frames), fall back to random/edge
+            start = np.random.randint(0, max_start_frame + 1)
+            return start, start + self.window_size_frames
+        return 0, total
+    
         
     def load_poses_for_video(self, video_id: str) -> np.ndarray:
         '''
@@ -291,10 +358,10 @@ def trainer_collate_fn(batch):
     }
     
 
-def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_caption_len=20, 
-               max_tries=10, min_events=1, tokenizer=None, load_by='window', seed=42):
+def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_tries=10, max_caption_len=20, 
+               min_events=1, tokenizer=None, load_by='window', seed=42):
     dataset = DVCDataset( # Create a data loader for a specific split
-        split=split, stride_ratio=stride_ratio, max_caption_len=max_caption_len, max_tries=max_tries,
+        split=split, stride_ratio=stride_ratio, max_tries=max_tries, max_caption_len=max_caption_len,
         min_events=min_events, tokenizer=tokenizer, load_by=load_by, seed=seed
     )
     return DataLoader(
