@@ -43,7 +43,7 @@ def post_process_object_detection(
             Shape `(num_kept_predictions,)`.
     '''
     out_logits, out_bbox = outputs.logits, outputs.pred_boxes
-    pred_cap_tokens, pred_cap_logits = outputs.pred_cap_tokens, outputs.pred_cap_logits
+    pred_cap_logits, pred_cap_tokens = outputs.pred_cap_logits, outputs.pred_cap_tokens
     
     if target_lengths is not None:
         if len(out_logits) != len(target_lengths):

@@ -52,8 +52,8 @@ class ModelOutput:
     logits: torch.FloatTensor
     pred_boxes: torch.FloatTensor
     pred_counts: torch.FloatTensor
-    pred_cap_tokens: torch.FloatTensor
     pred_cap_logits: torch.FloatTensor
+    pred_cap_tokens: torch.FloatTensor
 
 
 def preprocess_logits_for_metrics(logits_tuple, labels):
@@ -61,8 +61,8 @@ def preprocess_logits_for_metrics(logits_tuple, labels):
     logits = logits_tuple[1].detach().cpu()
     pred_boxes = logits_tuple[2].detach().cpu()
     pred_counts = logits_tuple[3].detach().cpu()
-    pred_cap_logits = logits_tuple[3].detach().cpu()
-    pred_cap_tokens = logits_tuple[4].detach().cpu()
+    pred_cap_logits = logits_tuple[4].detach().cpu()
+    pred_cap_tokens = logits_tuple[5].detach().cpu()
     return logits, pred_boxes, pred_counts, pred_cap_logits, pred_cap_tokens
 
 
@@ -75,8 +75,13 @@ def compute_metrics(
     tokenizer: AutoTokenizer = None,
 ) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
-    predictions = ModelOutput(*evaluation_results.predictions)
-    
+    predictions = ModelOutput(
+        logits=torch.as_tensor(evaluation_results.predictions[0]),
+        pred_boxes=torch.as_tensor(evaluation_results.predictions[1]),
+        pred_counts=torch.as_tensor(evaluation_results.predictions[2]),
+        pred_cap_logits=torch.as_tensor(evaluation_results.predictions[3]),
+        pred_cap_tokens=torch.as_tensor(evaluation_results.predictions[4]),
+    )
     # Postprocess to get top-k per window, plus caption texts/scores
     post_processed_outputs = post_process_object_detection(
         outputs=predictions,
@@ -85,7 +90,6 @@ def compute_metrics(
         target_lengths=None, # Keep relative [0, 1] boxes for IoU computation
         tokenizer=tokenizer,
     )
-
     # Build per-window prediction lists with reranking and topN selection
     batch_pred_events: List[List[Tuple[float, float]]] = []
     batch_pred_captions: List[List[str]] = []
