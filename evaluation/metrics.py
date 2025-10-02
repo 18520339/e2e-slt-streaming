@@ -191,7 +191,7 @@ def compute_metrics(
                 dense_scores_accum[metric_name].append(float(np.mean(soda_f1s_at_tiou) if soda_f1s_at_tiou else 0.0))
             else:
                 dense_scores_accum[metric_name].append(0.0) # Metric not available
-        metrics[f'dense_{metric_name}@{tiou * 100:.0f}'] = dense_scores_accum[metric_name][-1]
+            metrics[f'dense_{metric_name}@{tiou * 100:.0f}'] = dense_scores_accum[metric_name][-1]
             
     # Average localization metrics across IoU thresholds
     loc_precision = float(np.mean(precs) if precs else 0.0)
