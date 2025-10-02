@@ -39,12 +39,11 @@ from transformers import AutoTokenizer, EvalPrediction
 from utils import cw_to_se
 from postprocess import post_process_object_detection
 from .helpers import (
-    compute_iou,
     precision_recall_at_tiou,
     pairs_for_threshold,
     compute_text_metrics
 )
-from .soda_c import meteor_similarity_matrix, chased_dp_assignment
+from .soda_c import compute_soda_at_tiou
 
 
 @dataclass
@@ -74,7 +73,6 @@ def compute_metrics(
 	temporal_iou_thresholds: Sequence[float] = (0.3, 0.5, 0.7, 0.9),
     tokenizer: AutoTokenizer = None,
 ) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
     predictions = ModelOutput(
         logits=torch.as_tensor(evaluation_results.predictions[0]),
         pred_boxes=torch.as_tensor(evaluation_results.predictions[1]),
@@ -145,85 +143,70 @@ def compute_metrics(
         batch_gt_events.append(gt_events[:m])
         batch_gt_captions.append(texts[:m])
 
-    # 1) Localization metrics
+    # Calculate Localization and Dense captioning metrics across IoU thresholds
+    metrics: Dict[str, float] = {}
     precs, recs = [], []
-    for tiou in temporal_iou_thresholds:
-        p_list, r_list = [], []
-        for pred_events, gt_events in zip(batch_pred_events, batch_gt_events):
-            p, r = precision_recall_at_tiou(pred_events, gt_events, tiou)
-            p_list.append(p)
-            r_list.append(r)
-            
-        precs.append(float(np.mean(p_list) if p_list else 0.0))
-        recs.append(float(np.mean(r_list) if r_list else 0.0))
-        metrics[f'loc_precision@{tiou:.1f}'] = precs[-1]
-        metrics[f'loc_recall@{tiou:.1f}'] = recs[-1]
-        metrics[f'loc_f1@{tiou:.1f}'] = 2 * precs[-1] * recs[-1] / (precs[-1] + recs[-1]) if (precs[-1] + recs[-1]) > 0 else 0.0
+    dense_scores_accum = {'bleu4': [], 'meteor': [], 'cider': [], 'soda_c': []}
+    
+    for tiou in temporal_iou_thresholds: 
+        precisions_at_tiou, recalls_at_tiou = [], []
+        all_preds_at_tiou: List[str] = []
+        all_refs_at_tiou: List[List[str]] = []
+        soda_f1s_at_tiou = [] 
         
+        for pred_events, pred_captions, gt_events, gt_captions in zip(
+            batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
+        ):
+            # Localization metrics (precision/recall per window)
+            p, r = precision_recall_at_tiou(pred_events, gt_events, tiou) 
+            precisions_at_tiou.append(p)
+            recalls_at_tiou.append(r)
+            
+            # Dense captioning metrics (pred/gt pairs per window)
+            preds, refs = pairs_for_threshold(pred_events, pred_captions, gt_events, gt_captions, tiou) 
+            all_preds_at_tiou.extend(preds)
+            all_refs_at_tiou.extend(refs)
+            
+            if len(pred_events) == 0 or len(gt_events) == 0:
+                soda_f1s_at_tiou.append(0.0)
+                continue
+            
+            # SODA_c-like storytelling score (DP over IoU-masked METEOR similarity)
+            f1_tiou = compute_soda_at_tiou(pred_events, pred_captions, gt_events, gt_captions, tiou)
+            soda_f1s_at_tiou.append(f1_tiou)
+        
+        # Localization metrics
+        precs.append(float(np.mean(precisions_at_tiou) if precisions_at_tiou else 0.0))
+        recs.append(float(np.mean(recalls_at_tiou) if recalls_at_tiou else 0.0))
+        metrics[f'loc_precision@{tiou * 100:.0f}'] = precs[-1]
+        metrics[f'loc_recall@{tiou * 100:.0f}'] = recs[-1]
+        metrics[f'loc_f1@{tiou * 100:.0f}'] = 2 * precs[-1] * recs[-1] / (precs[-1] + recs[-1]) if (precs[-1] + recs[-1]) > 0 else 0.0
+        
+        # Dense captioning metrics
+        text_metrics = compute_text_metrics(all_preds_at_tiou, all_refs_at_tiou)
+        for metric_name in dense_scores_accum:
+            if metric_name in text_metrics:
+                dense_scores_accum[metric_name].append(text_metrics.get(metric_name, 0.0))
+            elif metric_name == 'soda_c':
+                dense_scores_accum[metric_name].append(float(np.mean(soda_f1s_at_tiou) if soda_f1s_at_tiou else 0.0))
+            else:
+                dense_scores_accum[metric_name].append(0.0) # Metric not available
+        metrics[f'dense_{metric_name}@{tiou * 100:.0f}'] = dense_scores_accum[metric_name][-1]
+            
+    # Average localization metrics across IoU thresholds
     loc_precision = float(np.mean(precs) if precs else 0.0)
     loc_recall = float(np.mean(recs) if recs else 0.0)
     metrics['loc_precision_avg'] = loc_precision
     metrics['loc_recall_avg'] = loc_recall
     metrics['loc_f1_avg'] = 2 * loc_precision * loc_recall / (loc_precision + loc_recall) if (loc_precision + loc_recall) > 0 else 0.0
-
-    # 2) Dense captioning metrics across IoU thresholds
-    dense_scores_accum = {'bleu4': [], 'meteor': [], 'cider': []}
-    for tiou in temporal_iou_thresholds:
-        all_preds: List[str] = []
-        all_refs: List[List[str]] = []
-        
-        for pred_events, pred_captions, gt_events, gt_captions in zip(
-            batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
-        ):
-            preds, refs = pairs_for_threshold(pred_events, pred_captions, gt_events, gt_captions, tiou)
-            all_preds.extend(preds)
-            all_refs.extend(refs)
-
-        text_metrics = compute_text_metrics(all_preds, all_refs)
-        for metric_name in dense_scores_accum:
-            dense_scores_accum[metric_name].append(text_metrics.get(metric_name, 0.0))
-            metrics[f'dense_{metric_name}@{tiou:.1f}'] = dense_scores_accum[metric_name][-1]
-            
+    
+    # Average Dense captioning metrics across IoU thresholds
     metrics['dense_bleu4_avg'] = float(np.mean(dense_scores_accum['bleu4'])) if dense_scores_accum['bleu4'] else 0.0
     metrics['dense_meteor_avg'] = float(np.mean(dense_scores_accum['meteor'])) if dense_scores_accum['meteor'] else 0.0
     metrics['dense_cider_avg'] = float(np.mean(dense_scores_accum['cider'])) if dense_scores_accum['cider'] else 0.0
+    metrics['soda_c_avg'] = float(np.mean(dense_scores_accum['soda_c'])) if dense_scores_accum['soda_c'] else 0.0
 
-    # SODA_c-like storytelling score (DP over IoU-masked METEOR similarity)
-    soda_f1 = []
-    for t in temporal_iou_thresholds:
-        f_list = []
-        for pred_events, pred_captions, gt_events, gt_captions in zip(
-            batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
-        ):
-            if len(pred_events) == 0 or len(gt_events) == 0:
-                f_list.append(0.0)
-                continue
-            
-            # Sort events and captions by their start timestamps
-            idx_pred = list(np.argsort([s for s, _ in pred_events])) if pred_events else []
-            idx_gt = list(np.argsort([s for s, _ in gt_events])) if gt_events else []
-            pred_events_sorted = [pred_events[i] for i in idx_pred]
-            pred_captions_sorted = [pred_captions[i] for i in idx_pred]
-            gt_events_sorted = [gt_events[i] for i in idx_gt]
-            gt_captions_sorted = [gt_captions[i] for i in idx_gt]
-            
-            # Compute IoU and similarity matrices
-            iou_mat = np.array([[compute_iou(p, g) for p in pred_events_sorted] for g in gt_events_sorted], dtype=float)
-            iou_mat[iou_mat < t] = 0.0 # IoU mask
-            sim_mat = meteor_similarity_matrix(pred_captions_sorted, gt_captions_sorted) # Shape (G, P)
-
-            score_mat = iou_mat * sim_mat
-            max_score, _pairs = chased_dp_assignment(score_mat)
-            n_g, n_p = score_mat.shape
-            p = max_score / max(1, n_p)
-            r = max_score / max(1, n_g)
-            f_list.append(2 * p * r / (p + r) if (p + r) > 0 else 0.0)
-
-        soda_f1.append(float(np.mean(f_list) if f_list else 0.0))
-        metrics[f'soda_c_f1@{t:.1f}'] = soda_f1[-1]
-    metrics['soda_c_f1_avg'] = float(np.mean(soda_f1) if soda_f1 else 0.0)
-
-    # 3) Paragraph-level metrics
+    # Paragraph-level metrics
     para_preds: List[str] = []
     para_refs: List[List[str]] = []
     for pred_events, pred_captions, gt_events, gt_captions in zip(
