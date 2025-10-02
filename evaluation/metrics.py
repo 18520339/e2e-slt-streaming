@@ -95,14 +95,14 @@ def compute_metrics(
     batch_pred_captions: List[List[str]] = []
 
     # Number of events predicted per window from count head
-    if predictions.get('pred_counts') is not None:
-        topNs = predictions.get('pred_counts').argmax(dim=-1).clamp(min=0).cpu().numpy().tolist()
+    if predictions.pred_counts is not None:
+        topNs = predictions.pred_counts.argmax(dim=-1).clamp(min=0).tolist()
     else:
         topNs = [min(top_k, len(p['scores'])) for p in post_processed_outputs]
 
     for pred_window_idx, pred_window in enumerate(post_processed_outputs):
-        event_scores = pred_window['event_scores'].detach().cpu().numpy().tolist()
-        event_ranges = pred_window['event_ranges'].detach().cpu().numpy().tolist()  # (start, end)
+        event_scores = pred_window['event_scores'].tolist()
+        event_ranges = pred_window['event_ranges'].tolist()  # (start, end)
         event_caption_scores = pred_window.get('event_caption_scores', [0.0] * len(event_scores))
         event_captions = pred_window.get('event_captions', [''] * len(event_scores))
 
@@ -134,7 +134,7 @@ def compute_metrics(
         gt_boxes_se = cw_to_se(gt_boxes_cw) if gt_boxes_cw.numel() else gt_boxes_cw
         gt_events = [tuple(map(float, box.tolist())) for box in gt_boxes_se]
         
-        seq_tokens = window.get('seq_tokens', []).cpu().numpy()
+        seq_tokens = window.get('seq_tokens', [])
         texts = tokenizer.batch_decode( # Decode all at once
             np.where(seq_tokens == -100, tokenizer.pad_token_id, seq_tokens), # Replace -100 (used by HF) with pad token id
             skip_special_tokens=True, clean_up_tokenization_spaces=True
@@ -167,7 +167,7 @@ def compute_metrics(
     metrics['loc_f1_avg'] = 2 * loc_precision * loc_recall / (loc_precision + loc_recall) if (loc_precision + loc_recall) > 0 else 0.0
 
     # 2) Dense captioning metrics across IoU thresholds
-    dense_scores_accum = {'bleu': [], 'meteor': [], 'cider': []}
+    dense_scores_accum = {'bleu4': [], 'meteor': [], 'cider': []}
     for tiou in temporal_iou_thresholds:
         all_preds: List[str] = []
         all_refs: List[List[str]] = []
