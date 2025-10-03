@@ -96,7 +96,7 @@ def compute_metrics(
     if predictions.pred_counts is not None:
         topNs = predictions.pred_counts.argmax(dim=-1).clamp(min=0).tolist()
     else:
-        topNs = [min(top_k, len(p['scores'])) for p in post_processed_outputs]
+        topNs = [min(top_k, len(p.get('event_scores', []))) for p in post_processed_outputs]
 
     for pred_window_idx, pred_window in enumerate(post_processed_outputs):
         event_scores = pred_window['event_scores'].tolist()

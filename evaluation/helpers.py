@@ -28,22 +28,22 @@ def precision_recall_at_tiou(
 	Edge cases policy (to avoid inflated scores):
 	- If both predictions and GT are empty: return (None, None) so caller can skip this window.
 	- If predictions are empty but GT non-empty: (0.0, 0.0).
-	- If GT is empty but predictions non-empty: (0.0, 0.0) since all predictions are false positives.
+	- If predictions non-empty but GT is empty: (0.0, 0.0) since all predictions are false positives.
 	'''
 	if len(pred_events) == 0 and len(gt_events) == 0: return None, None # Undefined; skip in aggregation
 	if len(pred_events) == 0 and len(gt_events) > 0: return 0.0, 0.0
-	if len(pred_events) > 0 and len(gt_events) == 0:  return 0.0, 0.0
+	if len(pred_events) > 0 and len(gt_events) == 0: return 0.0, 0.0
 
 	pred_covered, gt_covered = 0, 0
 	for p in pred_events: # Pred coverage
 		if any(compute_iou(p, g) >= tiou for g in gt_events):
 			pred_covered += 1
-	precision = pred_covered / max(1, len(pred_events))
+	precision = pred_covered / len(pred_events)
 	
 	for g in gt_events: # GT coverage
 		if any(compute_iou(p, g) >= tiou for p in pred_events):
 			gt_covered += 1
-	recall = gt_covered / max(1, len(gt_events))
+	recall = gt_covered / len(gt_events)
 	return precision, recall
 
 
@@ -54,7 +54,7 @@ def pairs_for_threshold(
 	gt_captions: List[str],
 	tiou: float,
 ) -> Tuple[List[str], List[List[str]]]:
-	'''Create matched pairs at a tiou threshold following ActivityNet logic.
+	''' Create matched pairs at a tiou threshold following ActivityNet logic.
 
 	- For each prediction, add one pair per GT whose IoU >= tiou.
 	- If a prediction matches no GT, pair it with a random garbage string.
