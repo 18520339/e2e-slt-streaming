@@ -129,7 +129,7 @@ class PDVCLoss(ImageLoss):
         ) * source_logits.shape[1]
 
         pred_counts = outputs['pred_counts']
-        max_events = pred_counts.shape[1] - 1 # Last index is for no-object
+        max_events = pred_counts.shape[1] - 1
         target_counters = torch.tensor(
             [len(target['boxes']) if len(target['boxes']) < max_events else max_events for target in targets], 
             device=source_logits.device, dtype=torch.long
