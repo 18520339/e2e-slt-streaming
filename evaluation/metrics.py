@@ -159,8 +159,9 @@ def compute_metrics(
         ):
             # Localization metrics (precision/recall per window)
             p, r = precision_recall_at_tiou(pred_events, gt_events, tiou) 
-            precisions_at_tiou.append(p)
-            recalls_at_tiou.append(r)
+            if p is not None and r is not None: # Skip windows where both GT and predictions are empty (p, r) = (None, None)
+                precisions_at_tiou.append(p)
+                recalls_at_tiou.append(r)
             
             # Dense captioning metrics (pred/gt pairs per window)
             preds, refs = pairs_for_threshold(pred_events, pred_captions, gt_events, gt_captions, tiou) 

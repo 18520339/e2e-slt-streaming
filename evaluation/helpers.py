@@ -1,7 +1,7 @@
 import random
 import string
 import evaluate
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 bleu = evaluate.load('sacrebleu')
 meteor = evaluate.load('meteor')
@@ -20,14 +20,19 @@ def precision_recall_at_tiou(
 	pred_events: List[Tuple[float, float]],
 	gt_events: List[Tuple[float, float]],
 	tiou: float,
-) -> Tuple[float, float]:
+) -> Tuple[Optional[float], Optional[float]]:
 	''' Compute precision and recall at tiou for a single window:
 	- Precision = fraction of predictions that overlap any GT with IoU >= tiou.
 	- Recall    = fraction of GT covered by any prediction with IoU >= tiou.
+
+	Edge cases policy (to avoid inflated scores):
+	- If both predictions and GT are empty: return (None, None) so caller can skip this window.
+	- If predictions are empty but GT non-empty: (0.0, 0.0).
+	- If GT is empty but predictions non-empty: (0.0, 0.0) since all predictions are false positives.
 	'''
-	if len(pred_events) == 0 and len(gt_events) == 0: return 1.0, 1.0
-	if len(pred_events) == 0: return 0.0, 0.0
-	if len(gt_events) == 0: return 0.0, 1.0  # All preds are false positives; recall undefined -> 1.0 for empty GT
+	if len(pred_events) == 0 and len(gt_events) == 0: return None, None # Undefined; skip in aggregation
+	if len(pred_events) == 0 and len(gt_events) > 0: return 0.0, 0.0
+	if len(pred_events) > 0 and len(gt_events) == 0:  return 0.0, 0.0
 
 	pred_covered, gt_covered = 0, 0
 	for p in pred_events: # Pred coverage
