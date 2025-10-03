@@ -17,23 +17,59 @@ This repo expects BOBSL data laid out under `dataset/BOBSL` (already the default
 -   `VTT_DIR` (aligned subtitles in .vtt)
 -   `POSE_ROOT` (pose `.npy` folders per video id)
 
-### 3. Train
+### 3. Train (Hugging Face Trainer + CLI)
+
+`main.py` is a single-file training script using `HfArgumentParser` with dataclasses. All key knobs are CLI flags with sensible defaults.
+
+Quick start (CPU or single GPU):
 
 ```bash
-python main.py
+python main.py --output_dir "./outputs/run1"
+```
+
+Multi‑GPU with torchrun (recommended):
+
+```bash
+torchrun --standalone --nproc_per_node=2 main.py \
+	--output_dir "./outputs/run1" \
+	--per_device_train_batch_size 8 \
+	--per_device_eval_batch_size 8 \
+	--gradient_accumulation_steps 16 \
+	--num_train_epochs 20 \
+	--learning_rate 2e-4 \
+	--report_to none
+```
+
+Multi‑GPU with accelerate:
+
+```bash
+accelerate launch --num_processes 2 --mixed_precision fp16 main.py \
+	--output_dir "./outputs/run1" \
+	--per_device_train_batch_size 8 \
+	--per_device_eval_batch_size 8 \
+	--gradient_accumulation_steps 16 \
+	--num_train_epochs 20 \
+	--learning_rate 2e-4 \
+	--report_to none
 ```
 
 What it does:
 
 -   Builds train/val datasets from BOBSL poses and VTTs.
 -   Initializes a Deformable DETR-based model with a captioning head.
--   Trains with Hugging Face Trainer and saves the final model to `checkpoints/`.
+-   Trains with Hugging Face Trainer and saves the final model to the `CHECKPOINT_DIR` defined in `config.py`.
+
+Common flags (subset shown):
+
+-   Data: `--max_caption_len 64`, `--val_stride_ratio 0.9`, `--seed 2025`
+-   Metrics: `--alpha 0.3`, `--ranking_temperature 2.0`, `--top_k 10`, `--temporal_iou_thresholds 0.3 0.5 0.7 0.9`
+-   Trainer: `--num_train_epochs 20`, `--per_device_train_batch_size 16`, `--per_device_eval_batch_size 16`, `--gradient_accumulation_steps 16`, `--fp16 true`, `--output_dir ./outputs/run1`, `--early_stopping_patience 10`
 
 Tips:
 
--   To change window length, FPS, or caption length, edit `config.py` and `MAX_CAPTION_LEN` in `main.py`.
--   Metrics are available in `evaluation/metrics.py` (the hook in `main.py` is prepared but commented).
--   You can have a look at [Hugging Face Trainer API](https://huggingface.co/docs/transformers/main_classes/trainer) docs for more training options.
+-   To change window length or FPS, edit `config.py`. To change caption length, pass `--max_caption_len`.
+-   Metrics are computed during evaluation using `evaluation/metrics.py` (hooked via `compute_metrics`).
+-   Trainer logs/checkpoints go to `--output_dir` (default `/tmp`). The final model is also saved to `CHECKPOINT_DIR` from `config.py`.
 
 ### 4. Model smoke test (optional)
 
@@ -47,4 +83,4 @@ python pdvc.py
 
 -   VTT parsing: `webvtt-py` is used if available; otherwise a simple parser runs. Ensure your `.vtt` files are under `VTT_DIR`.
 -   Poses: Ensure `POSE_ROOT/<video_id>/*.npy` exists for each listed video id in your split JSON.
--   Temporary Trainer outputs: by default `/tmp` (in `main.py`), which you can change via `TrainingArguments(output_dir=...)`.
+-   Trainer outputs: by default `/tmp` (change with `--output_dir`).
