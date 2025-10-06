@@ -30,27 +30,39 @@ python main.py --output_dir "./outputs/run1"
 Multi‑GPU with torchrun (recommended):
 
 ```bash
-torchrun --standalone --nproc_per_node=2 main.py \
+CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 torchrun --nproc_per_node 6 main.py \
 	--output_dir "./outputs/run1" \
-	--per_device_train_batch_size 8 \
-	--per_device_eval_batch_size 8 \
-	--gradient_accumulation_steps 16 \
-	--num_train_epochs 20 \
-	--learning_rate 2e-4 \
-	--report_to none
+	--num_train_epochs 50 \
+	--per_device_train_batch_size 16 \
+	--per_device_eval_batch_size 32 \
+	--weight_decay 1e-4 \
+	--learning_rate 5e-4 \
+	--lr_scheduler_type "cosine_with_min_lr" \
+	--lr_scheduler_kwargs '{"min_lr": 1e-6}' \
+	--metric_for_best_model "eval_loss" \
+	--greater_is_better false \
+	--load_best_model_at_end true \
+	--early_stopping_patience 5 \
+	--report_to none \
 ```
 
 Multi‑GPU with accelerate:
 
 ```bash
-accelerate launch --num_processes 2 --mixed_precision fp16 main.py \
+CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 accelerate launch --num_processes 6 main.py \
 	--output_dir "./outputs/run1" \
-	--per_device_train_batch_size 8 \
-	--per_device_eval_batch_size 8 \
-	--gradient_accumulation_steps 16 \
-	--num_train_epochs 20 \
-	--learning_rate 2e-4 \
-	--report_to none
+	--num_train_epochs 50 \
+	--per_device_train_batch_size 16 \
+	--per_device_eval_batch_size 32 \
+	--weight_decay 1e-4 \
+	--learning_rate 5e-4 \
+	--lr_scheduler_type "cosine_with_min_lr" \
+	--lr_scheduler_kwargs '{"min_lr": 1e-6}' \
+	--metric_for_best_model "eval_loss" \
+	--greater_is_better false \
+	--load_best_model_at_end true \
+	--early_stopping_patience 5 \
+	--report_to none \
 ```
 
 What it does:
@@ -61,9 +73,9 @@ What it does:
 
 Common flags (subset shown):
 
--   Data: `--max_caption_len 64`, `--val_stride_ratio 0.9`, `--seed 2025`
+-   Data: `--max_caption_len 64`, `--val_stride_ratio 0.9`
 -   Metrics: `--alpha 0.3`, `--ranking_temperature 2.0`, `--top_k 10`, `--temporal_iou_thresholds 0.3 0.5 0.7 0.9`
--   Trainer: `--num_train_epochs 20`, `--per_device_train_batch_size 16`, `--per_device_eval_batch_size 16`, `--gradient_accumulation_steps 16`, `--fp16 true`, `--output_dir ./outputs/run1`, `--early_stopping_patience 10`
+-   Trainer: `--num_train_epochs 50`, `--per_device_train_batch_size 16`, `--per_device_eval_batch_size 32`, `--fp16 true`, `--output_dir ./outputs/run1`, `--early_stopping_patience 5`
 
 Tips:
 
