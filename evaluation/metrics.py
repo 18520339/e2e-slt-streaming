@@ -30,6 +30,7 @@ Notes:
   scores. The number of events kept per window defaults to the model's
   predicted count (argmax over pred_counts), with an upper bound of `top_k`.
 '''
+import sys
 import torch
 import numpy as np
 from dataclasses import dataclass
@@ -72,6 +73,7 @@ def compute_metrics(
     top_k: int = 10,    # Should be num_queries during training
 	temporal_iou_thresholds: Sequence[float] = (0.3, 0.5, 0.7, 0.9),
     tokenizer: AutoTokenizer = None,
+    soda_recursion_limit: int = 0, # Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations
 ) -> Dict[str, float]:
     predictions = ModelOutput(
         logits=torch.as_tensor(evaluation_results.predictions[0]),
@@ -146,7 +148,13 @@ def compute_metrics(
     # Calculate Localization and Dense captioning metrics across IoU thresholds
     metrics: Dict[str, float] = {}
     precs, recs = [], []
-    dense_scores_accum = {'bleu4': [], 'meteor': [], 'cider': [], 'soda_c': []}
+    dense_scores_accum = {'bleu4': [], 'meteor': [], 'cider': []}
+    
+    if soda_recursion_limit > 0: # Python use 1000 by default, increase if needed for SODA_c
+        if soda_recursion_limit <= sys.getrecursionlimit():
+            raise ValueError(f'soda_recursion_limit ({soda_recursion_limit}) must be greater than current sys recursion limit ({sys.getrecursionlimit()})')
+        sys.setrecursionlimit(soda_recursion_limit)
+        dense_scores_accum['soda_c'] = []
     
     for tiou in temporal_iou_thresholds: 
         precisions_at_tiou, recalls_at_tiou = [], []
@@ -172,9 +180,9 @@ def compute_metrics(
                 soda_f1s_at_tiou.append(0.0)
                 continue
             
-            # SODA_c-like storytelling score (DP over IoU-masked METEOR similarity)
-            f1_tiou = compute_soda_at_tiou(pred_events, pred_captions, gt_events, gt_captions, tiou)
-            soda_f1s_at_tiou.append(f1_tiou)
+            if soda_recursion_limit > 0: # SODA_c-like storytelling score (DP over IoU-masked METEOR similarity)
+                f1_tiou = compute_soda_at_tiou(pred_events, pred_captions, gt_events, gt_captions, tiou)
+                soda_f1s_at_tiou.append(f1_tiou)
         
         # Localization metrics
         precs.append(float(np.mean(precisions_at_tiou) if precisions_at_tiou else 0.0))
@@ -188,7 +196,7 @@ def compute_metrics(
         for metric_name in dense_scores_accum:
             if metric_name in text_metrics:
                 dense_scores_accum[metric_name].append(text_metrics.get(metric_name, 0.0))
-            elif metric_name == 'soda_c':
+            elif metric_name == 'soda_c' and soda_recursion_limit > 0:
                 dense_scores_accum[metric_name].append(float(np.mean(soda_f1s_at_tiou) if soda_f1s_at_tiou else 0.0))
             else:
                 dense_scores_accum[metric_name].append(0.0) # Metric not available
@@ -205,7 +213,7 @@ def compute_metrics(
     metrics['dense_bleu4_avg'] = float(np.mean(dense_scores_accum['bleu4'])) if dense_scores_accum['bleu4'] else 0.0
     metrics['dense_meteor_avg'] = float(np.mean(dense_scores_accum['meteor'])) if dense_scores_accum['meteor'] else 0.0
     metrics['dense_cider_avg'] = float(np.mean(dense_scores_accum['cider'])) if dense_scores_accum['cider'] else 0.0
-    metrics['soda_c_avg'] = float(np.mean(dense_scores_accum['soda_c'])) if dense_scores_accum['soda_c'] else 0.0
+    if soda_recursion_limit > 0: metrics['soda_c_avg'] = float(np.mean(dense_scores_accum['soda_c'])) if dense_scores_accum['soda_c'] else 0.0
 
     # Paragraph-level metrics
     para_preds: List[str] = []

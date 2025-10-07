@@ -1,5 +1,4 @@
 import gc
-import sys
 import torch
 from functools import partial
 from typing import Optional, Tuple
@@ -58,6 +57,7 @@ class DataArguments:
     alpha: float = field(default=0.3, metadata={"help": "Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score"})
     top_k: int = field(default=10, metadata={"help": "Should be num_queries during training"})
     temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
+    soda_recursion_limit: int = field(default=0, metadata={"help": "Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations"})
 
 
 @dataclass
@@ -94,8 +94,6 @@ class CustomTrainingArguments(TrainingArguments):
 
 
 def main():
-    sys.setrecursionlimit(2000)  # Give Soda_c more time for recursion
-
     # Parse CLI args
     parser = HfArgumentParser((ModelArguments, DataArguments, CustomTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
@@ -161,11 +159,12 @@ def main():
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         compute_metrics=partial(
             compute_metrics,
-            ranking_temperature=data_args.ranking_temperature,  # Exponent T in caption score normalization by length^T
+            ranking_temperature=data_args.ranking_temperature,   # Exponent T in caption score normalization by length^T
             alpha=data_args.alpha,  # Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score
             top_k=data_args.top_k,  # Should be num_queries during training
             temporal_iou_thresholds=data_args.temporal_iou_thresholds,
             tokenizer=tokenizer,
+            soda_recursion_limit=data_args.soda_recursion_limit, # 0 to disable for faster calculations
         ),
         callbacks=[EarlyStoppingCallback(early_stopping_patience=training_args.early_stopping_patience)],
     )
