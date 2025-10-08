@@ -94,12 +94,12 @@ def compute_text_metrics(predictions: List[str], references: List[str]) -> Dict[
 	rouge_score = rouge.compute(predictions=predictions, references=references)['rougeL']
 	cider_score = cider.compute(predictions=predictions, references=[[ref] for ref in references])['CIDEr']
 	meteor_score = meteor.compute(predictions=predictions, references=references)['meteor']
-	exact_match = sum(p == g[0] for p, g in zip(predictions, references)) / max(1, len(references))
+	exact_match = sum(p == g for p, g in zip(predictions, references)) / max(1, len(references))
 	return {
 		'bleu4': float(bleu_score),    # SacreBLEU returns corpus BLEU (%) across n-gram up to 4 by default,
 		'bleurt': float(bleurt_score), # Roughly between 0 and 1 (sometimes less than 0, sometimes more than 1)
 		'rougeL': float(rouge_score),  
 		'meteor': float(meteor_score), 
 		'cider': float(cider_score),   # https://github.com/huggingface/evaluate/pull/613/files
-		'exact_match': float(exact_match),
+		# 'exact_match': float(exact_match),
 	}

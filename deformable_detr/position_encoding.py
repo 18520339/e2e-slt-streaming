@@ -25,8 +25,7 @@ class PositionEmbeddingSine(nn.Module):
         pixel_values 1d: (B, T, C)
         pixel_mask 1d:   (B, T) with 1 for valid positions, 0 for padding
         durations:       (B,) duration (in frames) of each sequence in the batch
-        Returns: 
-            pos: (B, T, C) position embeddings
+        Returns: (B, 2*embedding_dim, T) position embeddings
         '''
         if pixel_mask is None: raise ValueError('No pixel mask provided')
         x_embed = pixel_mask.cumsum(1, dtype=torch.float32) # (B, T)

@@ -35,7 +35,7 @@ def post_process_object_detection(
         - `event_labels` (`torch.Tensor`): Labels of the kept predictions, 
             always 1 (foreground class) since there is only one class. 
             Shape `(num_kept_predictions,)`.
-        - `event_events` (`torch.Tensor`): Bounding boxes of the kept predictions in (start, end) format.
+        - `event_ranges` (`torch.Tensor`): Bounding boxes of the kept predictions in (start, end) format.
             Shape `(num_kept_predictions, 2)`.
         - `event_caption_scores` (`list[float]`): Caption scores of the kept predictions.
             Shape `(num_kept_predictions,)`.
@@ -83,6 +83,6 @@ def post_process_object_detection(
         'event_scores': s[s > threshold], 
         'event_labels': l[s > threshold], 
         'event_ranges': b[s > threshold], 
-        'event_caption_scores': c[s > threshold],
+        'event_caption_scores': [c[i] for i in range(len(c)) if s[i] > threshold],
         'event_captions': [t[i] for i in range(len(t)) if s[i] > threshold],
     } for s, l, b, c, t in zip(scores, labels, boxes, caption_scores, pred_captions)]
