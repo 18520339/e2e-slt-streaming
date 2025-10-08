@@ -148,7 +148,7 @@ def compute_metrics(
     # Calculate Localization and Dense captioning metrics across IoU thresholds
     metrics: Dict[str, float] = {}
     precs, recs = [], []
-    dense_scores_accum = {'bleu4': [], 'meteor': [], 'cider': []}
+    dense_scores_accum = {'bleu4': [], 'bleurt': [], 'rougeL': [], 'meteor': [], 'cider': []}
     
     if soda_recursion_limit > 0: # Python use 1000 by default, increase if needed for SODA_c
         if soda_recursion_limit <= sys.getrecursionlimit():
@@ -159,7 +159,7 @@ def compute_metrics(
     for tiou in temporal_iou_thresholds: 
         precisions_at_tiou, recalls_at_tiou = [], []
         all_preds_at_tiou: List[str] = []
-        all_refs_at_tiou: List[List[str]] = []
+        all_refs_at_tiou: List[str] = []
         soda_f1s_at_tiou = [] 
         
         for pred_events, pred_captions, gt_events, gt_captions in zip(
@@ -210,14 +210,12 @@ def compute_metrics(
     metrics['loc_f1_avg'] = 2 * loc_precision * loc_recall / (loc_precision + loc_recall) if (loc_precision + loc_recall) > 0 else 0.0
     
     # Average Dense captioning metrics across IoU thresholds
-    metrics['dense_bleu4_avg'] = float(np.mean(dense_scores_accum['bleu4'])) if dense_scores_accum['bleu4'] else 0.0
-    metrics['dense_meteor_avg'] = float(np.mean(dense_scores_accum['meteor'])) if dense_scores_accum['meteor'] else 0.0
-    metrics['dense_cider_avg'] = float(np.mean(dense_scores_accum['cider'])) if dense_scores_accum['cider'] else 0.0
-    if soda_recursion_limit > 0: metrics['soda_c_avg'] = float(np.mean(dense_scores_accum['soda_c'])) if dense_scores_accum['soda_c'] else 0.0
-
+    for metric_name, scores in dense_scores_accum.items():
+        metrics[f'dense_{metric_name}_avg'] = float(np.mean(scores)) if scores else 0.0
+    
     # Paragraph-level metrics
     para_preds: List[str] = []
-    para_refs: List[List[str]] = []
+    para_refs: List[str] = []
     for pred_events, pred_captions, gt_events, gt_captions in zip(
         batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
     ):
@@ -227,10 +225,9 @@ def compute_metrics(
         para_pred = '. '.join([pred_captions[i] for i in idx_pred]).strip()
         para_gt = '. '.join([gt_captions[i] for i in idx_gt]).strip()
         para_preds.append(para_pred if para_pred else '')
-        para_refs.append([para_gt if para_gt else ''])  # single reference
+        para_refs.append(para_gt if para_gt else '')  # single reference
 
     para_scores = compute_text_metrics(para_preds, para_refs)
-    metrics['para_bleu4'] = para_scores.get('bleu4', 0.0)
-    metrics['para_meteor'] = para_scores.get('meteor', 0.0)
-    metrics['para_cider'] = para_scores.get('cider', 0.0)
+    for metric_name, score in para_scores.items():
+        metrics[f'para_{metric_name}'] = score
     return metrics
