@@ -7,8 +7,7 @@ from config import *
 
 def get_video_info(video_path: str):
     if not os.path.exists(video_path):
-        print('Video file not found:', video_path)
-        return 0
+        raise FileNotFoundError(f'Video file not found: {video_path}')
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened(): raise ValueError(f'Cannot open video: {video_path}')
@@ -108,8 +107,7 @@ def se_to_cw(se: torch.Tensor) -> torch.Tensor:
 def ensure_cw_format(boxes: torch.Tensor) -> torch.Tensor:
     '''
     Ensure boxes are in (center, width) format. If input is (start, end), convert it.
-    boxes: (N, 2) or (..., 2)
-    Returns: (..., 2) as (center, width)
+    Returns: (N, 2) as (center, width)
     '''
     if boxes.shape[-1] != 2: raise ValueError('Boxes must have shape (N, 2)')
     s, e = boxes[:, 0], boxes[:, 1]
