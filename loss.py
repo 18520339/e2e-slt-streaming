@@ -21,7 +21,7 @@ class DeformableDetrHungarianMatcher(HungarianMatcher):
     This class computes an assignment between the targets and the predictions of the network. 
     For efficiency reasons, the targets don't include the no_object. In general, there are more predictions than targets. 
     In this case, we do a 1-to-1 matching of the best predictions, while the others are un-matched (and thus treated as non-objects).
-    cost = cost = λ_cls * class_cost + λ_L1 * L1(cw_pred, cw_tgt) + λ_GIoU * (1 - IoU(pred_se, tgt_se))
+    cost = λ_cls * class_cost + λ_L1 * L1(cw_pred, cw_tgt) + λ_GIoU * (1 - IoU(pred_se, tgt_se))
     
     Args:
         class_cost: The relative weight of the classification error in the matching cost.

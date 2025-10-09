@@ -53,7 +53,7 @@ class ModelOutput:
     pred_boxes: torch.FloatTensor
     pred_counts: torch.FloatTensor
     pred_cap_logits: torch.FloatTensor
-    pred_cap_tokens: torch.FloatTensor
+    pred_cap_tokens: torch.LongTensor
 
 
 def preprocess_logits_for_metrics(logits_tuple, labels):

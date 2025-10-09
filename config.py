@@ -34,7 +34,7 @@ RIGHT_HAND_IDS = list(range(112, 133))  # 21 points
 MOUTH_IDS = list(range(83, 91))  # Inner mouth 8 points
 FACE_IDS = list(range(23, 40)) + [53]  # First 18 as cheek/lower approx
 ALL_SELECTED_IDS = BODY_IDS + LEFT_HAND_IDS + RIGHT_HAND_IDS + MOUTH_IDS + FACE_IDS  # Total 9+21+21+8+18=77
-CONF_THRESHOLD = 0.4  # From supp: Keypoints with conf > 0.5 considered valid
+CONF_THRESHOLD = 0.5  # From supp: Keypoints with conf > 0.5 considered valid
 NUM_KEYPOINTS = len(ALL_SELECTED_IDS)
 KPS_MODULES = {
     'body': {'kps_ids': BODY_IDS, 'kps_rel_range': (0, 9)},
