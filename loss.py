@@ -177,13 +177,13 @@ class PDVCLoss(ImageLoss):
         if 'pred_cap_logits' not in outputs: raise KeyError('No caption logits found in outputs')
         idx = self._get_source_permutation_idx(indices)
         
-        source_logits = outputs['pred_cap_logits'][idx]  # [batch_size * num_matched, max_len - 1, vocab_size + 1]
+        source_logits = outputs['pred_cap_logits'][idx]  # [batch_size * num_matched, max_len - 1, vocab_size]
         target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size * num_matched, max_len]
-        target_tokens = target_tokens[:, 1:source_logits.shape[2]]  # Remove the start token for targets
+        target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  # Remove the start token for targets
         target_masks = (target_tokens != self.pad_token_id).long()  # [batch_size * num_matched, max_len - 1]
         
         loss_caption = F.cross_entropy(
-            source_logits.reshape(-1, source_logits.shape[-1]),     # [batch_size * num_matched * (max_len - 1), vocab_size + 1]
+            source_logits.reshape(-1, source_logits.shape[-1]),     # [batch_size * num_matched * (max_len - 1), vocab_size]
             target_tokens.reshape(-1),                              # [batch_size * num_matched * (max_len - 1)]
             ignore_index=self.pad_token_id, 
             reduction='none'
@@ -275,9 +275,9 @@ class DeformableDetrForObjectDetectionLoss:
             self.weight_dict.update(aux_weight_dict) # Weights for each decoder layer
         
         loss_dict, last_indices = self.criterion(outputs, labels) # Compute the losses, based on outputs and labels
-        if self.config.with_box_refine: # No loss on class and box if using ground truth proposals
+        if not self.config.with_box_refine: # No loss on class and box if using ground truth proposals
             for key in ['loss_ce', 'loss_bbox', 'loss_giou']: 
                 self.weight_dict[key] = 0 # We only need to pay attention to captioning performance
         
         loss = sum(loss_dict[k] * self.weight_dict[k] for k in loss_dict if k in self.weight_dict)
-        return loss, last_indices, self.auxiliary_outputs
+        return loss, loss_dict, self.auxiliary_outputs
