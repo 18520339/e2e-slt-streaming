@@ -117,12 +117,12 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         return_dict: Optional[bool] = None,
     ) -> Union[tuple[FloatTensor], DeformableDetrObjectDetectionOutput]:
         # Ensure targets provide (center,width). If start/end (s<e & min>=0) provided, convert here
-        if labels is not None: 
-            labels: list[dict] = [{
-                'class_labels': l['class_labels'], 
-                'boxes': ensure_cw_format(l['boxes']),
-                'seq_tokens': l['seq_tokens']
-            } for l in labels]
+        # if labels is not None: 
+        #     labels: list[dict] = [{
+        #         'class_labels': l['class_labels'], 
+        #         'boxes': ensure_cw_format(l['boxes']),
+        #         'seq_tokens': l['seq_tokens']
+        #     } for l in labels]
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # Send images through DETR base model to obtain encoder + decoder outputs

@@ -178,7 +178,9 @@ class DeformableCaptioner(nn.Module):
 
             done = done | (next_token == self.eos_token_id) | (next_token == self.pad_token_id)
             if done.all(): break # Stop when all finished
-            next_token = next_token * (~done).long() # Mask out finished sequences
+            next_token = torch.where(done, torch.full_like(next_token, self.pad_token_id), next_token) # Once done, only produce <PAD>
+            step_log_probs = torch.where(done, torch.full_like(step_log_probs, float('-inf')), step_log_probs) # Mask out finished sequences
+            
             seq_log_probs[:, t] = step_log_probs
             seq_tokens[:, t] = next_token
             token = next_token # Feed next token
