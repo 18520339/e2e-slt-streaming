@@ -84,8 +84,8 @@ class DeformableCaptioner(nn.Module):
         self.deformable_rnn = DeformableLSTM(config, rnn_num_layers, dropout_rate)
 
         self.schedule_sampling_prob = 0.25
-        self.embed = nn.Embedding(self.vocab_size + 1, config.d_model, padding_idx=pad_token_id) # +1 for <BOS>
-        self.logit = nn.Linear(config.d_model, self.vocab_size + 1)
+        self.embed = nn.Embedding(self.vocab_size, config.d_model, padding_idx=pad_token_id)
+        self.logit = nn.Linear(config.d_model, self.vocab_size)
         self.dropout = nn.Dropout(dropout_rate)
 
         self.embed.weight.data.uniform_(-0.1, 0.1)
@@ -142,7 +142,9 @@ class DeformableCaptioner(nn.Module):
                     )
                 token = token.detach()
 
-            if i >= 1 and seq_tokens[:, i].data.sum() == 0: break # Break if all sequences end
+            if i >= 1 and ((seq_tokens[:, i] == self.pad_token_id) | (seq_tokens[:, i] == self.eos_token_id)).all(): 
+                break # Break if all sequences reach <EOS> or <PAD>
+            
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
             outputs.append(output) # (B*Q, vocab_size + 1)
         outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1) # (B*Q, Length, vocab_size + 1)

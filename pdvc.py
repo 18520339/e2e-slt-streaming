@@ -212,7 +212,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                     aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
                 
                 cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, reference, transformer_outputs_for_captioner)
-                outputs_cap_probs.append(cap_probs)               # (B, Q, length, vocab_size + 1)
+                outputs_cap_probs.append(cap_probs)               # (B, Q, length, vocab_size)
                 outputs_cap_tokens.append(aligned_tokens)         # (B, Q, length)
                 
         outputs_classes = torch.stack(outputs_classes)            # (L, B, Q, C)
@@ -224,9 +224,9 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         
         loss, loss_dict, auxiliary_outputs = None, None, None
         if labels is not None:
-            outputs_cap_probs  = torch.stack(outputs_cap_probs)   # (L, B, Q, length, vocab_size + 1)
+            outputs_cap_probs  = torch.stack(outputs_cap_probs)   # (L, B, Q, length, vocab_size)
             outputs_cap_tokens = torch.stack(outputs_cap_tokens)  # (L, B, Q, length)
-            pred_cap_logits = outputs_cap_probs[-1]               # (B, Q, length, vocab_size + 1)
+            pred_cap_logits = outputs_cap_probs[-1]               # (B, Q, length, vocab_size)
             pred_cap_tokens = outputs_cap_tokens[-1]              # (B, Q, length)
             
             loss, loss_dict, auxiliary_outputs = self.loss_function(
