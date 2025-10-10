@@ -32,13 +32,12 @@ Multi‑GPU with torchrun (recommended):
 ```bash
 CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 torchrun --nproc_per_node 6 main.py \
 	--output_dir "./outputs/run1" \
-	--num_train_epochs 50 \
-	--per_device_train_batch_size 16 \
-	--per_device_eval_batch_size 32 \
-	--weight_decay 1e-4 \
+	--num_train_epochs 300 \
+	--per_device_train_batch_size 32 \
+	--per_device_eval_batch_size 64 \
 	--learning_rate 5e-4 \
 	--lr_scheduler_type "cosine_with_min_lr" \
-	--lr_scheduler_kwargs '{"min_lr": 1e-6}' \
+	--lr_scheduler_kwargs '{"min_lr": 1e-7}' \
 	--metric_for_best_model "eval_loss" \
 	--greater_is_better false \
 	--load_best_model_at_end true \
@@ -51,13 +50,12 @@ Multi‑GPU with accelerate:
 ```bash
 CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 accelerate launch --num_processes 6 main.py \
 	--output_dir "./outputs/run1" \
-	--num_train_epochs 50 \
-	--per_device_train_batch_size 16 \
-	--per_device_eval_batch_size 32 \
-	--weight_decay 1e-4 \
+	--num_train_epochs 300 \
+	--per_device_train_batch_size 32 \
+	--per_device_eval_batch_size 64 \
 	--learning_rate 5e-4 \
 	--lr_scheduler_type "cosine_with_min_lr" \
-	--lr_scheduler_kwargs '{"min_lr": 1e-6}' \
+	--lr_scheduler_kwargs '{"min_lr": 1e-7}' \
 	--metric_for_best_model "eval_loss" \
 	--greater_is_better false \
 	--load_best_model_at_end true \
@@ -73,9 +71,9 @@ What it does:
 
 Common flags (subset shown):
 
--   Data: `--max_caption_len 64`, `--val_stride_ratio 0.9`
+-   Data: `--max_caption_len 32`, `--val_stride_ratio 0.9`
 -   Metrics: `--alpha 0.3`, `--ranking_temperature 2.0`, `--top_k 10`, `--temporal_iou_thresholds 0.3 0.5 0.7 0.9`
--   Trainer: `--num_train_epochs 50`, `--per_device_train_batch_size 16`, `--per_device_eval_batch_size 32`, `--fp16 true`, `--output_dir ./outputs/run1`, `--early_stopping_patience 5`
+-   Trainer: `--num_train_epochs 200`, `--per_device_train_batch_size 32`, `--per_device_eval_batch_size 64`, `--fp16 true`, `--output_dir ./outputs/run1`, `--early_stopping_patience 5`
 
 Tips:
 

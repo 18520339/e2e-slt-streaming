@@ -177,17 +177,17 @@ class PDVCLoss(ImageLoss):
         if 'pred_cap_logits' not in outputs: raise KeyError('No caption logits found in outputs')
         idx = self._get_source_permutation_idx(indices)
         
-        source_logits = outputs['pred_cap_logits'][idx]  # [batch_size * num_matched, max_len - 1, vocab_size]
+        source_logits = outputs['pred_cap_logits'][idx]                 # [batch_size * num_matched, max_len - 1, vocab_size]
         target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size * num_matched, max_len]
         target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  # Remove the start token for targets
-        target_masks = (target_tokens != self.pad_token_id).long()  # [batch_size * num_matched, max_len - 1]
+        target_masks = (target_tokens != self.pad_token_id).long()      # [batch_size * num_matched, max_len - 1]
         
         loss_caption = F.cross_entropy(
-            source_logits.reshape(-1, source_logits.shape[-1]),     # [batch_size * num_matched * (max_len - 1), vocab_size]
-            target_tokens.reshape(-1),                              # [batch_size * num_matched * (max_len - 1)]
+            source_logits.reshape(-1, source_logits.shape[-1]),         # [batch_size * num_matched * (max_len - 1), vocab_size]
+            target_tokens.reshape(-1),                                  # [batch_size * num_matched * (max_len - 1)]
             ignore_index=self.pad_token_id, 
             reduction='none'
-        ).view(target_masks.shape)                                  # [batch_size * num_matched, max_len - 1]
+        ).view(target_masks.shape)                                      # [batch_size * num_matched, max_len - 1]
         
         loss_caption = (loss_caption * target_masks).sum() / target_masks.sum().clamp(min=1)
         return {'loss_caption': loss_caption}
@@ -238,7 +238,7 @@ class PDVCLoss(ImageLoss):
 class DeformableDetrForObjectDetectionLoss:
     def __init__(
         self, config, pad_token_id=0,
-        weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
+        weight_dict={'loss_ce': 1, 'loss_bbox': 0, 'loss_giou': 2, 'loss_counter': 1, 'loss_caption': 1}
     ):
         super().__init__()
         self.config = config

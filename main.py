@@ -21,19 +21,21 @@ def is_bfloat16_supported(): # Checks if the current device supports bfloat16
 @dataclass
 class ModelArguments:
     d_model: int = field(default=512)
-    encoder_layers: int = field(default=6)
-    decoder_layers: int = field(default=6)
+    encoder_layers: int = field(default=2)
+    decoder_layers: int = field(default=2)
     encoder_attention_heads: int = field(default=8)
     decoder_attention_heads: int = field(default=8)
     encoder_n_points: int = field(default=4)
     decoder_n_points: int = field(default=4)
     num_feature_levels: int = field(default=4, metadata={"help": "The number of input feature levels"})
-    num_queries: int = field(default=10, metadata={"help": "Maximum number of events a window can have"})
+    num_queries: int = field(default=20, metadata={"help": "Maximum number of events a window can have"})
     num_labels: int = field(default=1, metadata={"help": "Single foreground class for caption"})
-    auxiliary_loss: bool = field(default=False, metadata={"help": "The training step may spend a time in per-layer caption alignment and Hungarian matching"})
-    class_cost: float = field(default=0.5, metadata={"help": "Relative weight of the classification error"})
-    bbox_cost: float = field(default=5.0, metadata={"help": "Relative weight of the L1 error of the bounding box coordinates"})
-    giou_cost: float = field(default=2.0, metadata={"help": "Relative weight of the generalized IoU loss of the bounding box"})
+    auxiliary_loss: bool = field(default=True, metadata={"help": "The training step may spend a time in per-layer caption alignment and Hungarian matching"})
+    class_cost: float = field(default=1, metadata={"help": "Relative weight of the classification error"})
+    bbox_cost: float = field(default=0, metadata={"help": "Relative weight of the L1 error of the bounding box coordinates"})
+    giou_cost: float = field(default=2, metadata={"help": "Relative weight of the generalized IoU loss of the bounding box"})
+    counter_cost: float = field(default=1, metadata={"help": "Relative weight of the event counter loss"})
+    caption_cost: float = field(default=1, metadata={"help": "Relative weight of the captioning loss"})
     focal_alpha: float = field(default=0.25)
     with_box_refine: bool = field(default=True, metadata={"help": "Learnt (True) or Ground truth proposals (False)"})
 
@@ -55,7 +57,7 @@ class DataArguments:
     # Metrics/Ranking
     ranking_temperature: float = field(default=2.0, metadata={"help": "Exponent T in caption score normalization by length^T"})
     alpha: float = field(default=0.3, metadata={"help": "Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score"})
-    top_k: int = field(default=10, metadata={"help": "Should be num_queries during training"})
+    top_k: int = field(default=20, metadata={"help": "Should be num_queries during training"})
     temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
     soda_recursion_limit: int = field(default=0, metadata={"help": "Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations"})
 
@@ -63,34 +65,38 @@ class DataArguments:
 @dataclass
 class CustomTrainingArguments(TrainingArguments):
     output_dir: str = field(default='/tmp', metadata={"help": "Directory for checkpoints and logs"})
-    num_train_epochs: float = field(default=50, metadata={"help": "Total number of training epochs"})
+    num_train_epochs: float = field(default=300, metadata={"help": "Total number of training epochs"})
     save_safetensors: bool = field(default=False, metadata={"help": "Disable safe serialization to avoid the error"})
     
     # Data processing
     # auto_find_batch_size=True, # Find batch size that fit memory via exponential decay, avoiding CUDA OOM
-    per_device_train_batch_size: int = field(default=16, metadata={"help": "Effective batch size = per_device_train_batch_size x gradient_accumulation_steps x num_devices"})
-    per_device_eval_batch_size: int = field(default=32, metadata={"help": "Faster evaluation during training"})
+    per_device_train_batch_size: int = field(default=32, metadata={"help": "Effective batch size = per_device_train_batch_size x gradient_accumulation_steps x num_devices"})
+    per_device_eval_batch_size: int = field(default=64, metadata={"help": "Faster evaluation during training"})
     dataloader_num_workers: int = field(default=4, metadata={"help": "Number of subprocesses to use for data loading"})
 
-    # Optimization
+    # Precision & optimization
     optim: str = field(default='adamw_torch_fused', metadata={"help": "Choose optimizer"})
     weight_decay: float = field(default=1e-4, metadata={"help": "Low since random windows already provide regularization"})
-    learning_rate: float = field(default=5e-4, metadata={"help": "Initial learning rate"})
-    lr_scheduler_type: str = field(default='cosine_with_min_lr')
-    lr_scheduler_kwargs: Optional[dict] = field(default_factory=lambda: dict(min_lr=1e-6))
     fp16: bool = field(default=not is_bfloat16_supported(), metadata={"help": "Use mixed precision training if supported"})
     bf16: bool = field(default=is_bfloat16_supported(), metadata={"help": "Use bfloat16 (if supported) instead of fp16 for mixed precision training"})
+    early_stopping_patience: int = field(default=5)
     
-    # Reporting and saving
+    # Learning rate scheduling
+    learning_rate: float = field(default=5e-4, metadata={"help": "Initial learning rate"})
+    lr_scheduler_type: str = field(default='cosine_with_min_lr')
+    lr_scheduler_kwargs: Optional[dict] = field(default_factory=lambda: dict(min_lr=1e-7))
+    
+    # Reporting
     report_to: Optional[str] = field(default='none', metadata={"help": "Whether to report to wandb/tensorboard/none"})
     logging_strategy: str = field(default='epoch')
     eval_strategy: str = field(default='epoch', metadata={"help": "Evaluate after each epoch"})
+    
+    # Saving
     save_strategy: str = field(default='epoch')
     save_total_limit: Optional[int] = field(default=1)
     metric_for_best_model: Optional[str] = field(default='eval_loss', metadata={"help": "Use validation loss/Bleu for early stopping"})
     greater_is_better: Optional[bool] = field(default=False, metadata={"help": "Lower loss / Higher Bleu is better"})
     load_best_model_at_end: bool = field(default=True, metadata={"help": "Load the best model based on validation loss/Bleu"})
-    early_stopping_patience: int = field(default=5)
 
 
 def main():
@@ -143,7 +149,10 @@ def main():
         rnn_num_layers=model_args.rnn_num_layers,
         cap_dropout_rate=model_args.cap_dropout_rate,
         max_caption_len=data_args.max_caption_len,
-        weight_dict={'loss_ce': 0.5, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 1.0, 'loss_caption': 2}
+        weight_dict={
+            'loss_ce': model_args.class_cost, 'loss_bbox': model_args.bbox_cost, 'loss_giou': model_args.giou_cost, 
+            'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost
+        }
     )  # IMPORTANT: Do not .to(device); Trainer handles device placement and DDP
 
     total_params = sum(p.numel() for p in model.parameters())

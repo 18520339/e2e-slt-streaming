@@ -115,7 +115,7 @@ class DeformableCaptioner(nn.Module):
             reference_points, transformer_outputs
         )
         output = self.logit(self.dropout(output))
-        return F.log_softmax(output, dim=1), state # (num_events, vocab_size + 1)
+        return F.log_softmax(output, dim=1), state # (num_events, vocab_size)
 
 
     def forward(self, seq_tokens, decoder_hidden_states, reference_points, transformer_outputs): # Teacher forcing during training
@@ -135,7 +135,7 @@ class DeformableCaptioner(nn.Module):
                 sample_mask = sample_prob < self.schedule_sampling_prob
                 if sample_mask.sum() != 0:
                     sample_idx = sample_mask.nonzero(as_tuple=False).view(-1)
-                    prob_prev = torch.exp(outputs[-1].data) # N x (V + 1)
+                    prob_prev = torch.exp(outputs[-1].data) # N x (V)
                     token.index_copy_(
                         dim=0, index=sample_idx,
                         source=torch.multinomial(prob_prev, 1).view(-1).index_select(0, sample_idx)
@@ -146,8 +146,8 @@ class DeformableCaptioner(nn.Module):
                 break # Break if all sequences reach <EOS> or <PAD>
             
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
-            outputs.append(output) # (B*Q, vocab_size + 1)
-        outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1) # (B*Q, Length, vocab_size + 1)
+            outputs.append(output) # (B*Q, vocab_size)
+        outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1) # (B*Q, Length, vocab_size)
         return outputs.view(batch_size, num_queries, outputs.size(1), -1) 
 
 
