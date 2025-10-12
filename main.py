@@ -49,7 +49,7 @@ class DataArguments:
     tokenizer_name: str = field(default='facebook/bart-base')
     use_fast_tokenizer: bool = field(default=True)
     stride_ratio: float = field(default=0.9)
-    max_caption_len: int = field(default=64)
+    max_tokens_len: int = field(default=32)
     max_tries: int = field(default=20)
     min_events: int = field(default=1)
     load_by: str = field(default='window')
@@ -65,7 +65,7 @@ class DataArguments:
 @dataclass
 class CustomTrainingArguments(TrainingArguments):
     output_dir: str = field(default='/tmp', metadata={"help": "Directory for checkpoints and logs"})
-    num_train_epochs: float = field(default=300, metadata={"help": "Total number of training epochs"})
+    num_train_epochs: float = field(default=200, metadata={"help": "Total number of training epochs"})
     save_safetensors: bool = field(default=False, metadata={"help": "Disable safe serialization to avoid the error"})
     
     # Data processing
@@ -79,12 +79,8 @@ class CustomTrainingArguments(TrainingArguments):
     weight_decay: float = field(default=1e-4, metadata={"help": "Low since random windows already provide regularization"})
     fp16: bool = field(default=not is_bfloat16_supported(), metadata={"help": "Use mixed precision training if supported"})
     bf16: bool = field(default=is_bfloat16_supported(), metadata={"help": "Use bfloat16 (if supported) instead of fp16 for mixed precision training"})
-    early_stopping_patience: int = field(default=5)
-    
-    # Learning rate scheduling
-    learning_rate: float = field(default=5e-4, metadata={"help": "Initial learning rate"})
-    lr_scheduler_type: str = field(default='cosine_with_min_lr')
-    lr_scheduler_kwargs: Optional[dict] = field(default_factory=lambda: dict(min_lr=1e-7))
+    learning_rate: float = field(default=5e-4, metadata={"help": "Linear decay learning rate"})
+    early_stopping_patience: int = field(default=10, metadata={"help": "Early stopping patience by validation loss or Bleu"})
     
     # Reporting
     report_to: Optional[str] = field(default='none', metadata={"help": "Whether to report to wandb/tensorboard/none"})
@@ -107,11 +103,11 @@ def main():
     # Data Loading
     tokenizer = AutoTokenizer.from_pretrained(data_args.tokenizer_name, use_fast=data_args.use_fast_tokenizer)
     train_dataset = DVCDataset(
-        split='train', max_tries=data_args.max_tries, max_caption_len=data_args.max_caption_len,
+        split='train', max_tries=data_args.max_tries, max_tokens_len=data_args.max_tokens_len,
         min_events=data_args.min_events, load_by=data_args.load_by, tokenizer=tokenizer, seed=training_args.seed
     )
     val_dataset = DVCDataset(
-        split='val', stride_ratio=data_args.stride_ratio, max_caption_len=data_args.max_caption_len,
+        split='val', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
         min_events=data_args.min_events, load_by=data_args.load_by, tokenizer=tokenizer, seed=training_args.seed
     )
 
@@ -148,7 +144,7 @@ def main():
         pad_token_id=tokenizer.pad_token_id,
         rnn_num_layers=model_args.rnn_num_layers,
         cap_dropout_rate=model_args.cap_dropout_rate,
-        max_caption_len=data_args.max_caption_len,
+        max_tokens_len=data_args.max_tokens_len,
         weight_dict={
             'loss_ce': model_args.class_cost, 'loss_bbox': model_args.bbox_cost, 'loss_giou': model_args.giou_cost, 
             'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost
@@ -182,19 +178,19 @@ def main():
     
     # Evaluate on test sets
     test_dataset = DVCDataset(
-        split='test', stride_ratio=data_args.stride_ratio, max_caption_len=data_args.max_caption_len,
+        split='test', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
         min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
     )
 
     print(f'Test dataset: {len(test_dataset)} samples')
     trainer.evaluate(eval_dataset=test_dataset, metric_key_prefix='test')
     
-    challenge_test_dataset = DVCDataset(
-        split='challenge_test', stride_ratio=data_args.stride_ratio, max_caption_len=data_args.max_caption_len,
-        min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
-    )
-    print(f'Challenge test dataset: {len(challenge_test_dataset)} samples')
-    trainer.evaluate(eval_dataset=challenge_test_dataset, metric_key_prefix='challenge_test')
+    # challenge_test_dataset = DVCDataset(
+    #     split='challenge_test', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
+    #     min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
+    # )
+    # print(f'Challenge test dataset: {len(challenge_test_dataset)} samples')
+    # trainer.evaluate(eval_dataset=challenge_test_dataset, metric_key_prefix='challenge_test')
 
     # Cleanup to free memory
     del tokenizer, train_dataset, val_dataset, model, training_args, trainer

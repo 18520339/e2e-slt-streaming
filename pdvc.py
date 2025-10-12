@@ -65,7 +65,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     def __init__(
         self, config: DeformableDetrConfig, 
         vocab_size: int, bos_token_id: int, eos_token_id: int, pad_token_id: int,
-        rnn_num_layers=1, cap_dropout_rate=0.1, max_caption_len=20,
+        rnn_num_layers=1, cap_dropout_rate=0.1, max_tokens_len=20,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ):
         super().__init__(config)
@@ -78,7 +78,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
         self.caption_head = DeformableCaptioner(
             config, vocab_size=vocab_size, bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
-            rnn_num_layers=rnn_num_layers, dropout_rate=cap_dropout_rate, max_caption_len=max_caption_len
+            rnn_num_layers=rnn_num_layers, dropout_rate=cap_dropout_rate, max_tokens_len=max_tokens_len
         )
         bias_value = -math.log((1 - 0.01) / 0.01)
         self.class_head.bias.data = torch.ones(config.num_labels) * bias_value
@@ -201,7 +201,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 match_indices = self.matcher({'logits': outputs_class, 'pred_boxes': outputs_coords[-1]}, labels)
                 
                 # Align target seq_tokens to query order for teacher forcing (shape: B x Q x L)
-                max_len = self.caption_head[layer].max_caption_len
+                max_len = self.caption_head[layer].max_tokens_len
                 aligned_tokens = torch.zeros(B, Q, max_len, dtype=torch.long, device=device)
                 
                 for b, (src_idx, tgt_idx) in enumerate(match_indices):
@@ -267,9 +267,9 @@ if __name__ == '__main__':
     from postprocess import post_process_object_detection
 
     # Fetch 1 batch from Data loader
-    max_caption_len = 12
+    max_tokens_len = 12
     tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base', use_fast=True)
-    train_loader = get_loader(split='train', batch_size=4, tokenizer=tokenizer, max_caption_len=max_caption_len)
+    train_loader = get_loader(split='train', batch_size=4, tokenizer=tokenizer, max_tokens_len=max_tokens_len)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     batch = next(iter(train_loader))
@@ -313,7 +313,7 @@ if __name__ == '__main__':
         pad_token_id=tokenizer.pad_token_id,
         rnn_num_layers=1,
         cap_dropout_rate=0.1,
-        max_caption_len=max_caption_len,
+        max_tokens_len=max_tokens_len,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ).to(device)
     

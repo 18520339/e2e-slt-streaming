@@ -10,7 +10,7 @@ from config import *
 
 
 class DVCDataset(Dataset):
-    def __init__(self, split, stride_ratio=0.5, max_tries=10, max_caption_len=20, 
+    def __init__(self, split, stride_ratio=0.5, max_tries=10, max_tokens_len=20, 
                  min_events=1, tokenizer=None, load_by='window', seed=42):
         '''
         PyTorch Dataset for DVC with on-the-fly sliding window sampling.
@@ -18,7 +18,7 @@ class DVCDataset(Dataset):
             split: 'train', 'val', or 'test'
             stride_ratio: For val/test sequential sampling (e.g., 0.5 for 50% overlap). Only used in val/test.
             max_tries: Max resamples for train windows with < min_events. Only used in train.
-            max_caption_len: Max caption token length for padding/truncation
+            max_tokens_len: Max caption token length for padding/truncation
             min_events: Min full events (subtitles) in a window
             tokenizer: HuggingFace tokenizer for text processing
             load_by: 'window' (default) or 'video' - whether to
@@ -30,7 +30,7 @@ class DVCDataset(Dataset):
         self.split = split
         self.window_size_frames = int(WINDOW_DURATION_SECONDS * FPS)
         self.stride = int(self.window_size_frames * stride_ratio)
-        self.max_caption_len = max_caption_len
+        self.max_tokens_len = max_tokens_len
         self.max_tries = max_tries
         self.min_events = min_events
         self.load_by = load_by
@@ -207,12 +207,12 @@ class DVCDataset(Dataset):
             labels['boxes'] = torch.tensor(labels['boxes'], dtype=torch.float)
             labels['seq_tokens'] = self.tokenizer(
                 labels['seq_tokens'], add_special_tokens=True, truncation=True, 
-                padding='max_length', max_length=self.max_caption_len, return_tensors='pt'
+                padding='max_length', max_length=self.max_tokens_len, return_tensors='pt'
             )['input_ids']
         else: # No valid subtitles in window
             labels['class_labels'] = torch.empty(0, dtype=torch.long)
             labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
-            labels['seq_tokens'] = torch.empty(0, self.max_caption_len, dtype=torch.long)
+            labels['seq_tokens'] = torch.empty(0, self.max_tokens_len, dtype=torch.long)
 
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels
@@ -358,10 +358,10 @@ def trainer_collate_fn(batch):
     }
     
 
-def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_tries=10, max_caption_len=20, 
+def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_tries=10, max_tokens_len=20, 
                min_events=1, tokenizer=None, load_by='window', seed=42):
     dataset = DVCDataset( # Create a data loader for a specific split
-        split=split, stride_ratio=stride_ratio, max_tries=max_tries, max_caption_len=max_caption_len,
+        split=split, stride_ratio=stride_ratio, max_tries=max_tries, max_tokens_len=max_tokens_len,
         min_events=min_events, tokenizer=tokenizer, load_by=load_by, seed=seed
     )
     return DataLoader(

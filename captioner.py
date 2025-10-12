@@ -70,7 +70,7 @@ class DeformableCaptioner(nn.Module):
     def __init__(
         self, config, vocab_size, 
         bos_token_id, eos_token_id, pad_token_id,
-        rnn_num_layers, dropout_rate, max_caption_len
+        rnn_num_layers, dropout_rate, max_tokens_len
     ):
         super().__init__()
         self.config = config
@@ -80,7 +80,7 @@ class DeformableCaptioner(nn.Module):
         self.pad_token_id = pad_token_id
         
         self.rnn_num_layers = rnn_num_layers
-        self.max_caption_len = max_caption_len
+        self.max_tokens_len = max_tokens_len
         self.deformable_rnn = DeformableLSTM(config, rnn_num_layers, dropout_rate)
 
         self.schedule_sampling_prob = 0.25
@@ -159,14 +159,14 @@ class DeformableCaptioner(nn.Module):
         
         # Initialize with <BOS> for all events (B*Q)
         token = torch.full((num_events,), self.bos_token_id, dtype=torch.long, device=decoder_hidden_states.device)
-        seq_log_probs = torch.full((num_events, self.max_caption_len), float('-inf'), dtype=torch.float, device=decoder_hidden_states.device)
-        seq_tokens = torch.full((num_events, self.max_caption_len), self.pad_token_id, dtype=torch.long, device=decoder_hidden_states.device)
+        seq_log_probs = torch.full((num_events, self.max_tokens_len), float('-inf'), dtype=torch.float, device=decoder_hidden_states.device)
+        seq_tokens = torch.full((num_events, self.max_tokens_len), self.pad_token_id, dtype=torch.long, device=decoder_hidden_states.device)
         
         seq_log_probs[:, 0] = 0.0
         seq_tokens[:, 0] = token 
         done = torch.zeros_like(token, dtype=torch.bool)  # (B*Q,)
 
-        for t in range(1, self.max_caption_len):
+        for t in range(1, self.max_tokens_len):
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
             if sample_max: # Greedy decoding
                 step_log_probs, next_token = torch.max(output.data, 1)
