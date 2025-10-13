@@ -65,7 +65,7 @@ class DataArguments:
 @dataclass
 class CustomTrainingArguments(TrainingArguments):
     output_dir: str = field(default='/tmp', metadata={"help": "Directory for checkpoints and logs"})
-    num_train_epochs: float = field(default=200, metadata={"help": "Total number of training epochs"})
+    num_train_epochs: float = field(default=100, metadata={"help": "Total number of training epochs"})
     save_safetensors: bool = field(default=False, metadata={"help": "Disable safe serialization to avoid the error"})
     
     # Data processing
@@ -161,6 +161,16 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=trainer_collate_fn,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=training_args.early_stopping_patience)],
+    )
+    trainer.train()
+    trainer.save_model(CHECKPOINT_DIR)
+    
+    eval_trainer = Trainer(
+        model=model,
+        args=training_args,
+        eval_dataset=val_dataset,
+        data_collator=trainer_collate_fn,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
         compute_metrics=partial(
             compute_metrics,
@@ -171,29 +181,27 @@ def main():
             tokenizer=tokenizer,
             soda_recursion_limit=data_args.soda_recursion_limit, # 0 to disable for faster calculations
         ),
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=training_args.early_stopping_patience)],
     )
-    trainer.train()
-    trainer.save_model(CHECKPOINT_DIR)
+    eval_trainer.evaluate()
     
     # Evaluate on test sets
     test_dataset = DVCDataset(
         split='test', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
         min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
     )
-
     print(f'Test dataset: {len(test_dataset)} samples')
-    trainer.evaluate(eval_dataset=test_dataset, metric_key_prefix='test')
+    eval_trainer.evaluate(eval_dataset=test_dataset, metric_key_prefix='test')
     
     # challenge_test_dataset = DVCDataset(
     #     split='challenge_test', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
     #     min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
     # )
     # print(f'Challenge test dataset: {len(challenge_test_dataset)} samples')
-    # trainer.evaluate(eval_dataset=challenge_test_dataset, metric_key_prefix='challenge_test')
+    # eval_trainer.evaluate(eval_dataset=challenge_test_dataset, metric_key_prefix='challenge_test')
 
     # Cleanup to free memory
-    del tokenizer, train_dataset, val_dataset, model, training_args, trainer
+    model.to('cpu')
+    del tokenizer, train_dataset, val_dataset, test_dataset, model, training_args, trainer, eval_trainer
     gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
 

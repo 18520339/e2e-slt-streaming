@@ -32,15 +32,13 @@ Multi‑GPU with torchrun (recommended):
 ```bash
 CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 torchrun --nproc_per_node 6 main.py \
 	--output_dir "./outputs/run1" \
-	--num_train_epochs 200 \
+	--num_train_epochs 100 \
 	--per_device_train_batch_size 32 \
 	--per_device_eval_batch_size 64 \
+	--weight_decay 1e-4 \
 	--learning_rate 5e-4 \
-	--metric_for_best_model "eval_loss" \
-	--greater_is_better false \
-	--load_best_model_at_end true \
 	--early_stopping_patience 10 \
-	--report_to none \
+	--report_to "wandb"
 ```
 
 Multi‑GPU with accelerate:
@@ -48,15 +46,13 @@ Multi‑GPU with accelerate:
 ```bash
 CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 accelerate launch --num_processes 6 main.py \
 	--output_dir "./outputs/run1" \
-	--num_train_epochs 200 \
+	--num_train_epochs 100 \
 	--per_device_train_batch_size 32 \
 	--per_device_eval_batch_size 64 \
+	--weight_decay 1e-4 \
 	--learning_rate 5e-4 \
-	--metric_for_best_model "eval_loss" \
-	--greater_is_better false \
-	--load_best_model_at_end true \
 	--early_stopping_patience 10 \
-	--report_to none \
+	--report_to "wandb"
 ```
 
 What it does:

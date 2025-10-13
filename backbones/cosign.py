@@ -1,8 +1,8 @@
-import yaml
 import torch
-import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+
+import numpy as np
 from .gcn_utils import Graph
 from .stgcn_block import get_stgcn_chain
 from config import *
