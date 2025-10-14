@@ -238,7 +238,7 @@ class PDVCLoss(ImageLoss):
 class DeformableDetrForObjectDetectionLoss:
     def __init__(
         self, config, pad_token_id=0,
-        weight_dict={'loss_ce': 1, 'loss_bbox': 0, 'loss_giou': 2, 'loss_counter': 1, 'loss_caption': 1}
+        weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2}
     ):
         super().__init__()
         self.config = config
