@@ -39,11 +39,7 @@ from transformers import AutoTokenizer, EvalPrediction
 
 from utils import cw_to_se
 from postprocess import post_process_object_detection
-from .helpers import (
-    precision_recall_at_tiou,
-    pairs_for_threshold,
-    compute_text_metrics
-)
+from .helpers import compute_iou, precision_recall_at_tiou, pairs_for_threshold, compute_text_metrics
 from .soda_c import compute_soda_at_tiou
 
 
@@ -144,7 +140,7 @@ def compute_metrics(
         m = min(len(gt_events), len(texts))
         batch_gt_events.append(gt_events[:m])
         batch_gt_captions.append(texts[:m])
-
+        
     # Calculate Localization and Dense captioning metrics across IoU thresholds
     metrics: Dict[str, float] = {}
     precs, recs = [], []
@@ -152,7 +148,7 @@ def compute_metrics(
     
     if soda_recursion_limit > 0: # Python use 1000 by default, increase if needed for SODA_c
         if soda_recursion_limit <= sys.getrecursionlimit():
-            raise ValueError(f'soda_recursion_limit ({soda_recursion_limit}) must be greater than current sys recursion limit ({sys.getrecursionlimit()})')
+            raise ValueError(f'soda_recursion_limit ({soda_recursion_limit}) must be > current sys recursion limit ({sys.getrecursionlimit()})')
         sys.setrecursionlimit(soda_recursion_limit)
         dense_scores_accum['soda_c'] = []
     
@@ -213,21 +209,35 @@ def compute_metrics(
     for metric_name, scores in dense_scores_accum.items():
         metrics[f'dense_{metric_name}_avg'] = float(np.mean(scores)) if scores else 0.0
     
-    # Paragraph-level metrics
-    para_preds: List[str] = []
-    para_refs: List[str] = []
+    # Overall Segmentation and Paragraph-level metrics
+    segment_aligns: List[float] = []     # Segment alignment accuracy or the ratio of predicted segments to ground truth segments
+    segment_overlaps: List[float] = []   # Average IoU to indicate the model's ability to capture precise segment boundaries
+    para_preds: List[str] = []           # Joined predicted captions per window
+    para_refs: List[str] = []            # Joined ground-truth captions per window
+    
     for pred_events, pred_captions, gt_events, gt_captions in zip(
         batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
     ):
         # Sort by start time
-        idx_pred = list(np.argsort([s for s, _ in pred_events])) if pred_events else []
-        idx_gt = list(np.argsort([s for s, _ in gt_events])) if gt_events else []
-        para_pred = '. '.join([pred_captions[i] for i in idx_pred]).strip()
-        para_gt = '. '.join([gt_captions[i] for i in idx_gt]).strip()
+        idx_preds = list(np.argsort([s for s, _ in pred_events])) if pred_events else []
+        idx_gts = list(np.argsort([s for s, _ in gt_events])) if gt_events else []
+        
+        # Segment alignment and overlap metrics
+        segment_aligns.append(len(pred_events) / len(gt_events) if len(gt_events) > 0 else 0)
+        segment_overlaps.append(
+            np.mean([max([compute_iou(p, g) for g in gt_events], default=0.0) for p in pred_events])
+            if pred_events and gt_events else 0.0
+        )
+        # Join captions into paragraphs
+        para_pred = ' '.join([pred_captions[i] for i in idx_preds]).strip()
+        para_gt = ' '.join([gt_captions[i] for i in idx_gts]).strip()
         para_preds.append(para_pred if para_pred else '')
         para_refs.append(para_gt if para_gt else '')  # single reference
 
+    metrics['segment_alignment'] = float(np.mean(segment_aligns)) if segment_aligns else 0.0
+    metrics['segment_overlap'] = float(np.mean(segment_overlaps)) if segment_overlaps else 0.0
     para_scores = compute_text_metrics(para_preds, para_refs)
+    
     for metric_name, score in para_scores.items():
         metrics[f'para_{metric_name}'] = score
     return metrics
