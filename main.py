@@ -31,13 +31,13 @@ class ModelArguments:
     num_queries: int = field(default=20, metadata={"help": "Maximum number of events a window can have"})
     num_labels: int = field(default=1, metadata={"help": "Single foreground class for caption"})
     auxiliary_loss: bool = field(default=True, metadata={"help": "The training step may spend a time in per-layer caption alignment and Hungarian matching"})
-    class_cost: float = field(default=1, metadata={"help": "Relative weight of the classification error"})
+    class_cost: float = field(default=2, metadata={"help": "Relative weight of the classification error"})
     bbox_cost: float = field(default=0, metadata={"help": "Relative weight of the L1 error of the bounding box coordinates"})
-    giou_cost: float = field(default=2, metadata={"help": "Relative weight of the generalized IoU loss of the bounding box"})
-    counter_cost: float = field(default=1, metadata={"help": "Relative weight of the event counter loss"})
-    caption_cost: float = field(default=1, metadata={"help": "Relative weight of the captioning loss"})
+    giou_cost: float = field(default=4, metadata={"help": "Relative weight of the generalized IoU loss of the bounding box"})
+    counter_cost: float = field(default=2, metadata={"help": "Relative weight of the event counter loss"})
+    caption_cost: float = field(default=2, metadata={"help": "Relative weight of the captioning loss"})
     focal_alpha: float = field(default=0.25)
-    with_box_refine: bool = field(default=True, metadata={"help": "Learnt (True) or Ground truth proposals (False)"})
+    with_box_refine: bool = field(default=True, metadata={"help": "Learnt (True) or Ground truth proposals (False, all losses except caption loss will be disabled)"})
 
     # Caption head / decoder bits
     rnn_num_layers: int = field(default=1)

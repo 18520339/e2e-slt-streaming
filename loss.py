@@ -276,7 +276,7 @@ class DeformableDetrForObjectDetectionLoss:
         
         loss_dict, last_indices = self.criterion(outputs, labels) # Compute the losses, based on outputs and labels
         if not self.config.with_box_refine: # No loss on class and box if using ground truth proposals
-            for key in ['loss_ce', 'loss_bbox', 'loss_giou']: 
+            for key in ['loss_ce', 'loss_bbox', 'loss_giou', 'loss_counter']: 
                 self.weight_dict[key] = 0 # We only need to pay attention to captioning performance
         
         loss = sum(loss_dict[k] * self.weight_dict[k] for k in loss_dict if k in self.weight_dict)
