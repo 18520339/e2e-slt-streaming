@@ -14,7 +14,7 @@ def generate_mask(shape, ratio, dim):
     num_windows = T // window_size_frames
     random_mask = np.random.rand(B, num_windows, len(KPS_MODULES)) > (1 - 2 * ratio) # Shape: (B, num_windows, parts)
     mask_q, mask_k = np.zeros_like(random_mask), np.zeros_like(random_mask)
-    position = np.where(random_mask) # Shape: (3, N) where N is number of True in random_mask and 3 means (B, num_windows, parts)
+    position = np.where(random_mask) # tuple of (B, num_windows, parts), each has N number of True in random_mask
     num_true = len(position[0])
 
     index = np.random.choice(num_true, size=num_true // 2, replace=False).tolist()
