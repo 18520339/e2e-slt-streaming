@@ -1,10 +1,12 @@
 import random
 import string
 import evaluate
+from bleurt.score import BleurtScorer
 from typing import Dict, List, Tuple, Optional
+from config import BLEURT_CHECKPOINT_PATH
 
 bleu = evaluate.load('sacrebleu') # Range: 0-100
-bleurt = evaluate.load('bleurt', module_type='metric', checkpoint='BLEURT-20')
+bleurt = BleurtScorer(BLEURT_CHECKPOINT_PATH)
 rouge = evaluate.load('rouge')
 meteor = evaluate.load('meteor')
 cider = evaluate.load('Kamichanw/CIDEr')
@@ -88,13 +90,13 @@ def compute_text_metrics(predictions: List[str], references: List[str]) -> Dict[
 	# Compute BLEU-4, BLEURT, ROUGE-L, METEOR, CIDEr, Exact Match, using HuggingFace's evaluate package for consistency
 	if len(predictions) == 0:  return {'bleu4': 0.0, 'bleurt': 0.0, 'rougeL': 0.0, 'meteor': 0.0, 'cider': 0.0, 'exact_match': 0.0}
 	bleu_score = bleu.compute(predictions=predictions, references=[[ref] for ref in references])['score']
-	bleurt_score = bleurt.compute(predictions=predictions, references=references)['scores']
+	bleurt_score = bleurt.score(candidates=predictions, references=references)
 	bleurt_score = sum(bleurt_score) / max(1, len(bleurt_score))
 	
 	rouge_score = rouge.compute(predictions=predictions, references=references)['rougeL']
 	cider_score = cider.compute(predictions=predictions, references=[[ref] for ref in references])['CIDEr']
 	meteor_score = meteor.compute(predictions=predictions, references=references)['meteor']
-	exact_match = sum(p == g for p, g in zip(predictions, references)) / max(1, len(references))
+	# exact_match = sum(p == g for p, g in zip(predictions, references)) / max(1, len(references))
 	return {
 		'bleu4': float(bleu_score),    # SacreBLEU returns corpus BLEU (%) across n-gram up to 4 by default,
 		'bleurt': float(bleurt_score), # Roughly between 0 and 1 (sometimes less than 0, sometimes more than 1)

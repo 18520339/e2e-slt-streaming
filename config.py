@@ -13,6 +13,7 @@ DATA_ROOT = Path('dataset/BOBSL') # TO BE FILLED BY USER
 POSE_ROOT = DATA_ROOT / 'bobsl_dwpose'  # Directory with pose .npy files
 CHECKPOINT_DIR = PROJECT_ROOT / 'checkpoints'
 OUTPUT_DIR = PROJECT_ROOT / 'outputs'
+BLEURT_CHECKPOINT_PATH = '/tmp/BLEURT-20'  # Path to unzipped BLEURT-20 checkpoint
 
 # -- Dataset and Dataloader Configuration ------------------------------------
 SUBSET_JSON = DATA_ROOT / 'original_data/metadata/subset2episode.json' # subset2episode.json for Train/val/test splits
