@@ -32,20 +32,22 @@ class GCN_unit(nn.Module):
     
 
 class STGCN_block(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, A, adaptive=True, stride=1, dropout=0, residual=True):
+    def __init__(self, in_channels, out_channels, kernel_sizes, A, adaptive=True, stride=1, dropout=0, residual=True):
         super().__init__()
-        assert len(kernel_size) == 2
-        assert kernel_size[0] % 2 == 1
-        self.gcn = GCN_unit(in_channels, out_channels, kernel_size[1], A, adaptive=adaptive)
-        
-        if kernel_size[0] > 1:
+        assert len(kernel_sizes) == 2
+        assert kernel_sizes[0] % 2 == 1
+        self.gcn = GCN_unit(
+            in_channels, out_channels, kernel_sizes[1], A, adaptive, 
+            # t_kernel_size=kernel_sizes[0], t_stride=stride, t_padding=(kernel_sizes[0] - 1) // 2
+        )
+        if kernel_sizes[0] > 1: # temporal_kernel
             self.tcn = nn.Sequential(
                 nn.Conv2d(
                     out_channels,
                     out_channels,
-                    kernel_size=(kernel_size[0], 1),
+                    kernel_size=(kernel_sizes[0], 1),
                     stride=(stride, 1),
-                    padding=((kernel_size[0] - 1) // 2, 0),
+                    padding=((kernel_sizes[0] - 1) // 2, 0),
                 ),
                 nn.BatchNorm2d(out_channels),
                 nn.Dropout(dropout, inplace=True),
@@ -68,12 +70,12 @@ class STGCN_block(nn.Module):
     
 
 class STGCNChain(nn.Sequential):
-    def __init__(self, in_dim, block_args, kernel_size, A, adaptive):
+    def __init__(self, in_dim, block_args, kernel_sizes, A, adaptive):
         super(STGCNChain, self).__init__()
         last_dim = in_dim
         for i, [channel, depth] in enumerate(block_args):
             for j in range(depth):
-                self.add_module(f'layer{i}_{j}', STGCN_block(last_dim, channel, kernel_size, A.clone(), adaptive))
+                self.add_module(f'layer{i}_{j}', STGCN_block(last_dim, channel, kernel_sizes, A.clone(), adaptive))
                 last_dim = channel
                 
 

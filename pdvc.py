@@ -65,11 +65,11 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     def __init__(
         self, config: DeformableDetrConfig, 
         vocab_size: int, bos_token_id: int, eos_token_id: int, pad_token_id: int,
-        rnn_num_layers=1, cap_dropout_rate=0.1, max_tokens_len=20,
+        temporal_kernel=5, rnn_num_layers=1, cap_dropout_rate=0.1, max_tokens_len=20,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ):
         super().__init__(config)
-        self.transformer = DeformableDetrModel(config) # Deformable DETR encoder-decoder model
+        self.transformer = DeformableDetrModel(config, temporal_kernel=temporal_kernel) # Deformable DETR encoder-decoder model
         self.matcher = DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
         
         # Detection heads on top: class + 2D temporal box (center, width)
