@@ -2,10 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from deformable_detr import TemporalMSDA
+from transformers import DeformableDetrConfig
 
 
 class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs/1502.03044
-    def __init__(self, config, rnn_num_layers=1, dropout_rate=0.5):
+    def __init__(self, config: DeformableDetrConfig, rnn_num_layers=1, dropout_rate=0.5):
         super().__init__()
         self.config = config
         self.n_levels = config.num_feature_levels
@@ -66,11 +67,11 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
         return output.squeeze(0), state # (B*Q, D)
 
 
-class DeformableCaptioner(nn.Module):
+class LSTMCaptioner(nn.Module):
     def __init__(
-        self, config, vocab_size, 
-        bos_token_id, eos_token_id, pad_token_id,
-        rnn_num_layers, dropout_rate, max_tokens_len
+        self, config: DeformableDetrConfig, vocab_size: int, 
+        bos_token_id: int, eos_token_id: int, pad_token_id: int,
+        rnn_num_layers: int, dropout_rate: float, max_tokens_len: int
     ):
         super().__init__()
         self.config = config

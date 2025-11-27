@@ -212,7 +212,7 @@ class DVCDataset(Dataset):
         else: # No valid subtitles in window
             labels['class_labels'] = torch.empty(0, dtype=torch.long)
             labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
-            labels['seq_tokens'] = torch.empty(0, self.max_tokens_len, dtype=torch.long)
+            labels['seq_tokens'] = torch.empty(self.tokenizer.pad_token_id, self.max_tokens_len, dtype=torch.long)
 
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels

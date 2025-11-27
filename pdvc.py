@@ -1,11 +1,10 @@
 import math
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Union, Dict, List, Any, Optional
+from typing import Union, Optional
 
 import torch
-import torch.nn.functional as F
-from torch import nn, Tensor, FloatTensor, LongTensor
+from torch import nn, FloatTensor, LongTensor
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
     DeformableDetrMLPPredictionHead,
@@ -14,7 +13,7 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
     inverse_sigmoid
 )
 from deformable_detr import DeformableDetrModel
-from captioner import DeformableCaptioner
+from captioners import LSTMCaptioner
 from loss import DeformableDetrHungarianMatcher, DeformableDetrForObjectDetectionLoss
 from utils import ensure_cw_format
 
@@ -76,7 +75,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.count_head = nn.Linear(config.d_model, config.num_queries + 1)  # Predict count of events in [0, num_queries]
         self.class_head = nn.Linear(config.d_model, config.num_labels)       # Num of foreground classes, no 'no-object' here
         self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
-        self.caption_head = DeformableCaptioner(
+        self.caption_head = LSTMCaptioner(
             config, vocab_size=vocab_size, bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
             rnn_num_layers=rnn_num_layers, dropout_rate=cap_dropout_rate, max_tokens_len=max_tokens_len
         )
