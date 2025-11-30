@@ -6,7 +6,7 @@ from transformers import DeformableDetrConfig
 
 
 class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs/1502.03044
-    def __init__(self, config: DeformableDetrConfig, rnn_num_layers=1, dropout_rate=0.5):
+    def __init__(self, config: DeformableDetrConfig, num_layers=1, dropout_rate=0.5):
         super().__init__()
         self.config = config
         self.n_levels = config.num_feature_levels
@@ -18,8 +18,8 @@ class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs
         self.attn_dropout    = nn.Dropout(dropout_rate)
         self.rnn = nn.LSTM(
             input_size=config.d_model * 3,  # Input: word_embed + attn_feat
-            hidden_size=config.d_model, num_layers=rnn_num_layers, bias=False,
-            dropout=dropout_rate if rnn_num_layers > 1 else 0 # Non-zero dropout expects num_layers greater than 1
+            hidden_size=config.d_model, num_layers=num_layers, bias=False,
+            dropout=dropout_rate if num_layers > 1 else 0 # Non-zero dropout expects num_layers greater than 1
         )
         self.ctx2attn = nn.Linear(self.attn_feat_dim, self.attn_hidden_dim)
         self.hs2attn = nn.Linear(config.d_model, self.attn_hidden_dim)
@@ -71,7 +71,8 @@ class LSTMCaptioner(nn.Module):
     def __init__(
         self, config: DeformableDetrConfig, vocab_size: int, 
         bos_token_id: int, eos_token_id: int, pad_token_id: int,
-        rnn_num_layers: int, dropout_rate: float, max_tokens_len: int
+        decoder_start_token_id: int, max_tokens_len: int,  
+        dropout_rate: float, num_layers: int # Number of LSTM layers
     ):
         super().__init__()
         self.config = config
@@ -79,10 +80,11 @@ class LSTMCaptioner(nn.Module):
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.pad_token_id = pad_token_id
+        self.decoder_start_token_id = None
         
-        self.rnn_num_layers = rnn_num_layers
+        self.num_layers = num_layers
         self.max_tokens_len = max_tokens_len
-        self.deformable_rnn = DeformableLSTM(config, rnn_num_layers, dropout_rate)
+        self.deformable_rnn = DeformableLSTM(config, num_layers, dropout_rate)
 
         self.schedule_sampling_prob = 0.25
         self.embed = nn.Embedding(self.vocab_size, config.d_model, padding_idx=pad_token_id)
@@ -100,8 +102,8 @@ class LSTMCaptioner(nn.Module):
         batch_size = reference_points.shape[0]
         num_events = batch_size * num_queries
         state = ( # state is a tuple of (h0, c0)
-            weight.new_zeros(self.rnn_num_layers, num_events, self.config.d_model),
-            weight.new_zeros(self.rnn_num_layers, num_events, self.config.d_model)
+            weight.new_zeros(self.num_layers, num_events, self.config.d_model),
+            weight.new_zeros(self.num_layers, num_events, self.config.d_model)
         )
         if reference_points.shape[-1] == 2:
             reference_points = reference_points[:, :, None] * torch.stack([transformer_outputs['valid_ratios']] * 2, -1)[:, None]
@@ -122,11 +124,10 @@ class LSTMCaptioner(nn.Module):
     def forward(self, seq_tokens, decoder_hidden_states, reference_points, transformer_outputs): # Teacher forcing during training
         batch_size, num_queries, _ = decoder_hidden_states.shape
         state, reference_points = self.prepare_for_captioning(num_queries, reference_points, transformer_outputs)
-        num_events = batch_size * num_queries
         
         outputs, seq_tokens = [], seq_tokens.long()
-        if seq_tokens.dim() == 3: 
-            seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, Length)
+        if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, L)
+        num_events = batch_size * num_queries
 
         for i in range(seq_tokens.size(1) - 1):
             token = seq_tokens[:, i].clone() # (B*Q,)
@@ -148,8 +149,8 @@ class LSTMCaptioner(nn.Module):
             
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
             outputs.append(output) # (B*Q, vocab_size)
-        outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1) # (B*Q, Length, vocab_size)
-        return outputs.view(batch_size, num_queries, outputs.size(1), -1) 
+        outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1) # (B*Q, L-1, vocab_size)
+        return outputs.view(batch_size, num_queries, outputs.size(1), -1) # (B, Q, L-1, vocab_size)
 
 
     @torch.no_grad() # Greedy or multinomial sampling during inference
@@ -186,5 +187,5 @@ class LSTMCaptioner(nn.Module):
             seq_tokens[:, t] = next_token
             token = next_token # Feed next token
 
-        T = seq_tokens.shape[-1] # Return structured (B, Q, T)
-        return seq_log_probs.view(batch_size, num_queries, T), seq_tokens.view(batch_size, num_queries, T)
+        # Return structured (B, Q, L)
+        return seq_log_probs.view(batch_size, num_queries, self.max_tokens_len), seq_tokens.view(batch_size, num_queries, self.max_tokens_len)

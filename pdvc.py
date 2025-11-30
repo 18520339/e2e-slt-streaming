@@ -13,7 +13,7 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
     inverse_sigmoid
 )
 from deformable_detr import DeformableDetrModel
-from captioners import LSTMCaptioner
+from captioners import LSTMCaptioner, MBartDecoderCaptioner
 from loss import DeformableDetrHungarianMatcher, DeformableDetrForObjectDetectionLoss
 from utils import ensure_cw_format
 
@@ -62,9 +62,9 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     _no_split_modules = None # We can't initialize the model on meta device as some weights are modified during the initialization
     
     def __init__(
-        self, config: DeformableDetrConfig, 
-        vocab_size: int, bos_token_id: int, eos_token_id: int, pad_token_id: int,
-        temporal_kernel=5, rnn_num_layers=1, cap_dropout_rate=0.1, max_tokens_len=20,
+        self, config: DeformableDetrConfig, captioner_class, vocab_size: int, 
+        bos_token_id: int, eos_token_id: int, pad_token_id: int, decoder_start_token_id: int = None,
+        temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_tokens_len=20,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ):
         super().__init__(config)
@@ -75,9 +75,11 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.count_head = nn.Linear(config.d_model, config.num_queries + 1)  # Predict count of events in [0, num_queries]
         self.class_head = nn.Linear(config.d_model, config.num_labels)       # Num of foreground classes, no 'no-object' here
         self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
-        self.caption_head = LSTMCaptioner(
-            config, vocab_size=vocab_size, bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
-            rnn_num_layers=rnn_num_layers, dropout_rate=cap_dropout_rate, max_tokens_len=max_tokens_len
+        self.caption_head = captioner_class(
+            config, vocab_size=vocab_size, 
+            bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
+            decoder_start_token_id=decoder_start_token_id, max_tokens_len=max_tokens_len,
+            dropout_rate=cap_dropout_rate, num_layers=num_cap_layers, 
         )
         bias_value = -math.log((1 - 0.01) / 0.01)
         self.class_head.bias.data = torch.ones(config.num_labels) * bias_value
@@ -211,8 +213,8 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                     aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
                 
                 cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, reference, transformer_outputs_for_captioner)
-                outputs_cap_probs.append(cap_probs)               # (B, Q, length, vocab_size)
-                outputs_cap_tokens.append(aligned_tokens)         # (B, Q, length)
+                outputs_cap_probs.append(cap_probs)               # (B, Q, Length - 1, vocab_size)
+                outputs_cap_tokens.append(aligned_tokens)         # (B, Q, Length - 1)
                 
         outputs_classes = torch.stack(outputs_classes)            # (L, B, Q, C)
         outputs_coords  = torch.stack(outputs_coords)             # (L, B, Q, 2)
@@ -223,17 +225,17 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         
         loss, loss_dict, auxiliary_outputs = None, None, None
         if labels is not None:
-            outputs_cap_probs  = torch.stack(outputs_cap_probs)   # (L, B, Q, length, vocab_size)
-            outputs_cap_tokens = torch.stack(outputs_cap_tokens)  # (L, B, Q, length)
-            pred_cap_logits = outputs_cap_probs[-1]               # (B, Q, length, vocab_size)
-            pred_cap_tokens = outputs_cap_tokens[-1]              # (B, Q, length)
+            outputs_cap_probs  = torch.stack(outputs_cap_probs)   # (L, B, Q, Length - 1, vocab_size)
+            outputs_cap_tokens = torch.stack(outputs_cap_tokens)  # (L, B, Q, Length - 1)
+            pred_cap_logits = outputs_cap_probs[-1]               # (B, Q, Length - 1, vocab_size)
+            pred_cap_tokens = outputs_cap_tokens[-1]              # (B, Q, Length - 1)
             
             loss, loss_dict, auxiliary_outputs = self.loss_function(
                 labels, logits, pred_boxes, pred_counts, pred_cap_logits,
                 outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
             )
             
-        if not self.training: # Greedy or multinomial sampling for last layer during inference (B, Q, Length)
+        if not self.training: # Greedy or multinomial sampling for last layer during inference (B, Q, Length - 1)
             pred_cap_logits, pred_cap_tokens = self.caption_head[-1].sample(layer_hidden_states, reference, transformer_outputs_for_captioner)
 
         if not return_dict:
@@ -267,7 +269,7 @@ if __name__ == '__main__':
 
     # Fetch 1 batch from Data loader
     max_tokens_len = 12
-    tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base', use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
     train_loader = get_loader(split='train', batch_size=4, tokenizer=tokenizer, max_tokens_len=max_tokens_len)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -306,13 +308,15 @@ if __name__ == '__main__':
     )
     model = DeformableDetrForObjectDetection(
         config=config,
+        captioner_class=MBartDecoderCaptioner,
         vocab_size=tokenizer.vocab_size,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
-        rnn_num_layers=1,
-        cap_dropout_rate=0.1,
+        decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
         max_tokens_len=max_tokens_len,
+        cap_dropout_rate=0.1,
+        num_cap_layers=3,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ).to(device)
     

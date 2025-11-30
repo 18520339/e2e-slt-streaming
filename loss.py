@@ -176,10 +176,11 @@ class PDVCLoss(ImageLoss):
         '''
         if 'pred_cap_logits' not in outputs: raise KeyError('No caption logits found in outputs')
         idx = self._get_source_permutation_idx(indices)
-        
         source_logits = outputs['pred_cap_logits'][idx]                 # [batch_size * num_matched, max_len - 1, vocab_size]
         target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size * num_matched, max_len]
-        target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  # Remove the start token for targets
+        
+        # Remove the start token for targets if it exists
+        if target_tokens.shape[1] > source_logits.shape[1]: target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  
         target_masks = (target_tokens != self.pad_token_id).long()      # [batch_size * num_matched, max_len - 1]
         
         loss_caption = F.cross_entropy(

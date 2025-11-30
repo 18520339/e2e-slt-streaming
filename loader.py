@@ -373,7 +373,7 @@ def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_tries=10, max
     
 if __name__ == '__main__':
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained('facebook/bart-base', use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', use_fast=True)
     train_loader = get_loader('train', batch_size=4, tokenizer=tokenizer)
     
     for batch in train_loader:
