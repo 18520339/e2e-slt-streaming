@@ -11,6 +11,7 @@ from transformers import (
 )
 from loader import DVCDataset, trainer_collate_fn
 from pdvc import DeformableDetrForObjectDetection
+from captioners import MBartDecoderCaptioner
 from evaluation import preprocess_logits_for_metrics, compute_metrics
 from config import *
 
@@ -40,7 +41,7 @@ class ModelArguments:
     with_box_refine: bool = field(default=True, metadata={"help": "Learnt (True) or Ground truth proposals (False, all losses except caption loss will be disabled)"})
 
     # Caption head / decoder bits
-    rnn_num_layers: int = field(default=1)
+    num_cap_layers: int = field(default=3)
     cap_dropout_rate: float = field(default=0.1)
 
 
@@ -80,19 +81,19 @@ class CustomTrainingArguments(TrainingArguments):
     fp16: bool = field(default=not is_bfloat16_supported(), metadata={"help": "Use mixed precision training if supported"})
     bf16: bool = field(default=is_bfloat16_supported(), metadata={"help": "Use bfloat16 (if supported) instead of fp16 for mixed precision training"})
     learning_rate: float = field(default=5e-4, metadata={"help": "Linear decay learning rate"})
-    early_stopping_patience: int = field(default=10, metadata={"help": "Early stopping patience by validation loss or Bleu"})
+    # early_stopping_patience: int = field(default=10, metadata={"help": "Early stopping patience by validation loss or Bleu"})
     
     # Reporting
     report_to: Optional[str] = field(default='none', metadata={"help": "Whether to report to wandb/tensorboard/none"})
     logging_strategy: str = field(default='epoch')
-    eval_strategy: str = field(default='epoch', metadata={"help": "Evaluate after each epoch"})
+    # eval_strategy: str = field(default='epoch', metadata={"help": "Evaluate after each epoch"})
     
     # Saving
     save_strategy: str = field(default='epoch')
     save_total_limit: Optional[int] = field(default=1)
-    metric_for_best_model: Optional[str] = field(default='eval_loss', metadata={"help": "Use validation loss/Bleu for early stopping"})
-    greater_is_better: Optional[bool] = field(default=False, metadata={"help": "Lower loss / Higher Bleu is better"})
-    load_best_model_at_end: bool = field(default=True, metadata={"help": "Load the best model based on validation loss/Bleu"})
+    # metric_for_best_model: Optional[str] = field(default='eval_loss', metadata={"help": "Use validation loss/Bleu for early stopping"})
+    # greater_is_better: Optional[bool] = field(default=False, metadata={"help": "Lower loss / Higher Bleu is better"})
+    # load_best_model_at_end: bool = field(default=True, metadata={"help": "Load the best model based on validation loss/Bleu"})
 
 
 def main():
@@ -138,13 +139,15 @@ def main():
     )
     model = DeformableDetrForObjectDetection(
         config=config,
+        captioner_class=MBartDecoderCaptioner,
         vocab_size=tokenizer.vocab_size,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
-        rnn_num_layers=model_args.rnn_num_layers,
-        cap_dropout_rate=model_args.cap_dropout_rate,
+        decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
         max_tokens_len=data_args.max_tokens_len,
+        num_cap_layers=model_args.num_cap_layers,
+        cap_dropout_rate=model_args.cap_dropout_rate,
         weight_dict={
             'loss_ce': model_args.class_cost, 'loss_bbox': model_args.bbox_cost, 'loss_giou': model_args.giou_cost, 
             'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost
@@ -159,9 +162,9 @@ def main():
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=val_dataset,
+        # eval_dataset=val_dataset,
         data_collator=trainer_collate_fn,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=training_args.early_stopping_patience)],
+        # callbacks=[EarlyStoppingCallback(early_stopping_patience=training_args.early_stopping_patience)],
     )
     trainer.train()
     trainer.save_model(CHECKPOINT_DIR)

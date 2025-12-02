@@ -36,9 +36,7 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 torchrun --nproc_per_node 6 main.py \
 	--per_device_train_batch_size 32 \
 	--per_device_eval_batch_size 64 \
 	--weight_decay 1e-4 \
-	--learning_rate 5e-4 \
-	--early_stopping_patience 10 \
-	--report_to "wandb"
+	--learning_rate 5e-4
 ```
 
 Multi‑GPU with accelerate:
@@ -50,9 +48,7 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,5,6 accelerate launch --num_processes 6 main.py \
 	--per_device_train_batch_size 32 \
 	--per_device_eval_batch_size 64 \
 	--weight_decay 1e-4 \
-	--learning_rate 5e-4 \
-	--early_stopping_patience 10 \
-	--report_to "wandb"
+	--learning_rate 5e-4
 ```
 
 What it does:
@@ -65,7 +61,7 @@ Common flags (subset shown):
 
 -   Data: `--max_caption_len 32`, `--val_stride_ratio 0.9`
 -   Metrics: `--alpha 0.3`, `--ranking_temperature 2.0`, `--top_k 10`, `--temporal_iou_thresholds 0.3 0.5 0.7 0.9`
--   Trainer: `--num_train_epochs 200`, `--per_device_train_batch_size 32`, `--per_device_eval_batch_size 64`, `--fp16 true`, `--output_dir ./outputs/run1`, `--early_stopping_patience 5`
+-   Trainer: `--num_train_epochs 100`, `--per_device_train_batch_size 32`, `--per_device_eval_batch_size 64`, `--fp16 true`, `--output_dir ./outputs/run1`
 
 Tips:
 
