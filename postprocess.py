@@ -65,7 +65,7 @@ def post_process_object_detection(
         boxes = boxes * scale_fct[:, None, :]
         
     if len(pred_cap_tokens):
-        mask = pred_cap_tokens != tokenizer.eos_token_id                                               # (batch_size, num_queries, max_tokens_len)
+        mask = (pred_cap_tokens != tokenizer.pad_token_id) & (pred_cap_tokens != tokenizer.eos_token_id)                                        # (batch_size, num_queries, max_tokens_len)
         caption_scores = (pred_cap_logits * mask).sum(dim=-1).cpu().numpy()                            # (batch_size, num_queries)
         caption_scores = [caption_scores[i][topk_boxes[i]] for i in range(caption_scores.shape[0])]    # (batch_size, k_value)
         

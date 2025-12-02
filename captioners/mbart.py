@@ -134,24 +134,35 @@ class MBartDecoderCaptioner(nn.Module):
             return_dict_in_generate=True, output_scores=True,
         )
 
+        # Get the raw generated sequences and scores
+        raw_sequences = generation_outputs.sequences  # (B*Q, generated_len) includes decoder_start_token
+        raw_scores = generation_outputs.scores        # tuple of (B*Q, vocab_size) for each generated token
+        num_generated = len(raw_scores)               # Number of tokens actually generated (excluding start token)
+        
+        # Compute log probs only for the tokens that were actually generated
+        if num_generated > 0:
+            scores_tensor = torch.stack(raw_scores, dim=1)  # (B*Q, num_generated, vocab_size)
+            scores_log_probs = F.log_softmax(scores_tensor, dim=-1)
+            
+            # Get the actual generated tokens (excluding decoder_start_token) and gather log probs for them
+            generated_tokens = raw_sequences[:, 1:1+num_generated]  # (B*Q, num_generated)
+            seq_log_probs = scores_log_probs.gather(2, generated_tokens.unsqueeze(-1)).squeeze(-1)  # (B*Q, num_generated)
+        else:
+            seq_log_probs = torch.zeros(num_events, 0, device=decoder_hidden_states.device)
+        
         # Pad or truncate seq_tokens to max_tokens_len for consistency
-        if generation_outputs.sequences.size(1) < self.max_tokens_len: 
+        if raw_sequences.size(1) < self.max_tokens_len:
             padding = torch.full(
-                (num_events, self.max_tokens_len - generation_outputs.sequences.size(1)), self.pad_token_id, 
+                (num_events, self.max_tokens_len - raw_sequences.size(1)), self.pad_token_id,
                 dtype=torch.long, device=decoder_hidden_states.device
             )
-            seq_tokens = torch.cat([generation_outputs.sequences, padding], dim=1)
+            seq_tokens = torch.cat([raw_sequences, padding], dim=1)
         else:
-            seq_tokens = generation_outputs.sequences[:, :self.max_tokens_len]
+            seq_tokens = raw_sequences[:, :self.max_tokens_len]
         
-        # Gather log probs for the actual generated tokens
-        next_tokens = seq_tokens[:, 1:]           # Remove decoder_start_token or first token: (B*Q, L-1)
-        seq_log_probs = F.log_softmax(torch.stack(generation_outputs.scores, dim=1), dim=-1) # (B*Q, L, vocab_size)
-        seq_log_probs = seq_log_probs.gather(2, next_tokens.unsqueeze(-1)).squeeze(-1)       # (B*Q, L-1)
-        
-        # Prepend log prob for BOS token (always 0 since it's given)
+        # Build full log probs: [0 for start token] + [generated log probs] + [-inf for padding]
         bos_log_probs = torch.zeros(num_events, 1, device=decoder_hidden_states.device)
-        seq_log_probs = torch.cat([bos_log_probs, seq_log_probs], dim=1)  # (B*Q, L)
+        seq_log_probs = torch.cat([bos_log_probs, seq_log_probs], dim=1)  # (B*Q, 1 + num_generated)
         
         # Pad or truncate seq_log_probs to max_tokens_len for consistency
         if seq_log_probs.size(1) < self.max_tokens_len:
