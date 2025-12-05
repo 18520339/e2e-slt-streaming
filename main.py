@@ -47,10 +47,10 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    tokenizer_name: str = field(default='facebook/bart-base')
+    tokenizer_name: str = field(default='facebook/mbart-large-cc25')
     use_fast_tokenizer: bool = field(default=True)
     stride_ratio: float = field(default=0.9)
-    max_tokens_len: int = field(default=32)
+    max_tokens_len: int = field(default=40)
     max_tries: int = field(default=20)
     min_events: int = field(default=1)
     load_by: str = field(default='window')
