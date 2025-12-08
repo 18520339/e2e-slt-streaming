@@ -76,13 +76,13 @@ def pairs_for_threshold(
 				refs.append(gt_captions[j])
 				matched = True
     
-		if not matched:
-			garbage = ' '.join(
-       			random.choice(string.ascii_lowercase) 
-          		for _ in range(random.randint(10, 20))
-			)
-			preds.append(pred_captions[i])
-			refs.append(garbage)
+		# if not matched:
+		# 	garbage = ' '.join(
+       	# 		random.choice(string.ascii_lowercase) 
+        #   		for _ in range(random.randint(10, 20))
+		# 	)
+		# 	preds.append(pred_captions[i])
+		# 	refs.append(garbage)
 	return preds, refs
 
 

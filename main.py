@@ -47,10 +47,9 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    tokenizer_name: str = field(default='facebook/bart-base')
-    use_fast_tokenizer: bool = field(default=True)
+    tokenizer_name: str = field(default='facebook/mbart-large-cc25')
     stride_ratio: float = field(default=0.9)
-    max_tokens_len: int = field(default=32)
+    max_tokens_len: int = field(default=40)
     max_tries: int = field(default=20)
     min_events: int = field(default=1)
     load_by: str = field(default='window')
@@ -102,7 +101,7 @@ def main():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # Data Loading
-    tokenizer = AutoTokenizer.from_pretrained(data_args.tokenizer_name, use_fast=data_args.use_fast_tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(data_args.tokenizer_name, src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
     train_dataset = DVCDataset(
         split='train', max_tries=data_args.max_tries, max_tokens_len=data_args.max_tokens_len,
         min_events=data_args.min_events, load_by=data_args.load_by, tokenizer=tokenizer, seed=training_args.seed

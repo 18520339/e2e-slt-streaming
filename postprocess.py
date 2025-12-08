@@ -65,19 +65,19 @@ def post_process_object_detection(
         boxes = boxes * scale_fct[:, None, :]
         
     if len(pred_cap_tokens):
-        mask = (pred_cap_tokens != tokenizer.pad_token_id) & (pred_cap_tokens != tokenizer.eos_token_id)                                        # (batch_size, num_queries, max_tokens_len)
-        caption_scores = (pred_cap_logits * mask).sum(dim=-1).cpu().numpy()                            # (batch_size, num_queries)
-        caption_scores = [caption_scores[i][topk_boxes[i]] for i in range(caption_scores.shape[0])]    # (batch_size, k_value)
+        mask = (pred_cap_tokens != tokenizer.pad_token_id) & (pred_cap_tokens != tokenizer.eos_token_id) # (batch_size, num_queries, max_tokens_len)
+        caption_scores = (pred_cap_logits * mask).sum(dim=-1).cpu().numpy()                              # (batch_size, num_queries)
+        caption_scores = [caption_scores[i][topk_boxes[i]] for i in range(caption_scores.shape[0])]      # (batch_size, k_value)
         
-        pred_cap_tokens = pred_cap_tokens.detach().cpu().numpy()                                       # (batch_size, num_queries, max_tokens_len)
-        pred_cap_tokens = [pred_cap_tokens[i][topk_boxes[i]] for i in range(pred_cap_tokens.shape[0])] # (batch_size, k_value, max_tokens_len)
-        pred_captions = [tokenizer.batch_decode(                                                       # (batch_size, k_value) 
-            np.where(topk_cap_tokens == -100, tokenizer.pad_token_id, topk_cap_tokens),                # Replace -100 (used by HF) with pad token id
+        pred_cap_tokens = pred_cap_tokens.detach().cpu().numpy()                                         # (batch_size, num_queries, max_tokens_len)
+        pred_cap_tokens = [pred_cap_tokens[i][topk_boxes[i]] for i in range(pred_cap_tokens.shape[0])]   # (batch_size, k_value, max_tokens_len)
+        pred_captions = [tokenizer.batch_decode(                                                         # (batch_size, k_value) 
+            np.where(topk_cap_tokens == -100, tokenizer.pad_token_id, topk_cap_tokens),                  # Replace -100 (used by HF) with pad token id
             skip_special_tokens=True, clean_up_tokenization_spaces=True
         ) for topk_cap_tokens in pred_cap_tokens]                                                     
     else: # No caption tokens predicted, so fill with empty strings and very low scores
-        caption_scores = [[-1e5] * k_value] * out_logits.shape[0]                                      # (batch_size, k_value)
-        pred_captions = [[''] * k_value] * out_logits.shape[0]                                         # (batch_size, k_value)
+        caption_scores = [[-1e5] * k_value] * out_logits.shape[0]                                        # (batch_size, k_value)
+        pred_captions = [[''] * k_value] * out_logits.shape[0]                                           # (batch_size, k_value)
         
     return [{
         'event_scores': s[s > threshold], 
