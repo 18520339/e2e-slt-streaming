@@ -25,7 +25,7 @@ WINDOW_DURATION_SECONDS = 15 # As per https://aclanthology.org/2025.acl-srw.93.p
 WIDTH = HEIGHT = 444  # Original video frame size in BOBSL
 
 # -- Pose Preprocessing (CoSign Inspired) -----------------------------------
-# Define keypoint groups based on COCO-WholeBody (133 points: body 0-22, face 23-90, left hand 91-111, right hand 112-132)
+# Define keypoint groups based on COCO-WholeBody (133 points: body 0-16, left foot 17-19, right foot 20-22, face 23-90, left hand 91-111, right hand 112-132)
 # Upper body (9): nose(0), left eye(1), right eye(2), left shoulder(5), right shoulder(6), left elbow(7), right elbow(8), left wrist(9), right wrist(10)
 # Mouth (8): inner lips approx 60-67 in face (face starts at 23, so 23+60-67 = 83-90, but adjust to 8)
 # Face lower/cheek (18): contour approx 23+0 to 23+16 (17 points), plus nose

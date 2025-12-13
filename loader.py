@@ -5,13 +5,14 @@ import numpy as np
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from poses.preprocessing import normalize_keypoints, threshold_confidence
+from poses.augmentation import augment_dvc_window
 from utils import parse_vtt
 from config import *
 
 
 class DVCDataset(Dataset):
     def __init__(self, split, stride_ratio=0.5, max_tries=10, max_tokens_len=20, 
-                 min_events=1, tokenizer=None, load_by='window', seed=42):
+                 min_events=1, tokenizer=None, pose_augment=False, load_by='window', seed=42):
         '''
         PyTorch Dataset for DVC with on-the-fly sliding window sampling.
         Args:
@@ -38,6 +39,7 @@ class DVCDataset(Dataset):
         np.random.seed(seed)
 
         self.tokenizer = tokenizer
+        self.pose_augment = pose_augment if split == 'train' else False # Augmentation only for training
         self.video_ids = self.load_subset(split)
         self.video_metadata = {} # Precomputed metadata per video for efficiency
         self.eval_windows = [] # Store windows for val/test splits
@@ -168,14 +170,22 @@ class DVCDataset(Dataset):
             window_poses = full_poses[window_start_frame:window_end_frame, :, :]
         elif self.load_by == 'window': # Load only the necessary segments for this window and concatenate
             window_poses = self.load_poses_for_window(video_id, window_start_frame, window_end_frame)
+
+        if self.pose_augment: # Apply before normalization so flip/affine operate in pixel space (train-only)
+            window_poses = np.asarray(window_poses, dtype=np.float32)
+            window_poses = augment_dvc_window(window_poses)
         
         # Preprocess poses: Normalize and threshold
         window_poses = normalize_keypoints(window_poses)
         window_poses = threshold_confidence(window_poses)
 
-        # Pad to fixed window size if needed and build a frame mask
-        orig_len = window_poses.shape[0]
-        if orig_len < self.window_size_frames:
+        # Crop/pad to fixed window size if needed and build a frame mask
+        orig_len = int(window_poses.shape[0])
+        if orig_len > self.window_size_frames:
+            window_poses = window_poses[: self.window_size_frames]
+            frame_mask = torch.ones(self.window_size_frames, dtype=torch.bool)
+            orig_len = self.window_size_frames
+        elif orig_len < self.window_size_frames:
             pad_len = self.window_size_frames - orig_len
             pad = np.zeros((pad_len, window_poses.shape[1], window_poses.shape[2]), dtype=window_poses.dtype)
             window_poses = np.concatenate([window_poses, pad], axis=0)
@@ -212,7 +222,7 @@ class DVCDataset(Dataset):
         else: # No valid subtitles in window
             labels['class_labels'] = torch.empty(0, dtype=torch.long)
             labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
-            labels['seq_tokens'] = torch.empty(self.tokenizer.pad_token_id, self.max_tokens_len, dtype=torch.long)
+            labels['seq_tokens'] = torch.empty(0, self.max_tokens_len, dtype=torch.long)
 
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels
@@ -359,10 +369,10 @@ def trainer_collate_fn(batch):
     
 
 def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_tries=10, max_tokens_len=20, 
-               min_events=1, tokenizer=None, load_by='window', seed=42):
+               min_events=1, tokenizer=None, pose_augment=False, load_by='window', seed=42):
     dataset = DVCDataset( # Create a data loader for a specific split
         split=split, stride_ratio=stride_ratio, max_tries=max_tries, max_tokens_len=max_tokens_len,
-        min_events=min_events, tokenizer=tokenizer, load_by=load_by, seed=seed
+        min_events=min_events, tokenizer=tokenizer, pose_augment=pose_augment, load_by=load_by, seed=seed
     )
     return DataLoader(
         dataset, batch_size=batch_size,
@@ -374,7 +384,7 @@ def get_loader(split='train', batch_size=32, stride_ratio=0.5, max_tries=10, max
 if __name__ == '__main__':
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
-    train_loader = get_loader('train', batch_size=4, tokenizer=tokenizer)
+    train_loader = get_loader('train', batch_size=4, tokenizer=tokenizer, pose_augment=True)
     
     for batch in train_loader:
         video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']
