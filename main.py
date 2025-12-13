@@ -50,7 +50,6 @@ class DataArguments:
     tokenizer_name: str = field(default='facebook/mbart-large-cc25')
     pose_augment: bool = field(default=False, metadata={'help': 'Apply pose augmentation during training'})
     stride_ratio: float = field(default=0.9)
-    max_window_tokens: int = field(default=256)
     max_event_tokens: int = field(default=40)
     max_tries: int = field(default=20)
     min_events: int = field(default=1)
@@ -105,15 +104,13 @@ def main():
     # Data Loading
     tokenizer = AutoTokenizer.from_pretrained(data_args.tokenizer_name, src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
     train_dataset = DVCDataset(
-        split='train', max_tries=data_args.max_tries, max_event_tokens=data_args.max_event_tokens,
-        min_events=data_args.min_events, load_by=data_args.load_by, tokenizer=tokenizer, 
-        pose_augment=data_args.pose_augment, seed=training_args.seed,
+        split='train', max_tries=data_args.max_tries, pose_augment=data_args.pose_augment, max_event_tokens=data_args.max_event_tokens,
+        min_events=data_args.min_events, tokenizer=tokenizer, load_by=data_args.load_by, seed=training_args.seed
         
     )
     val_dataset = DVCDataset(
-        split='val', stride_ratio=data_args.stride_ratio, max_event_tokens=data_args.max_event_tokens,
-        min_events=data_args.min_events, load_by=data_args.load_by, tokenizer=tokenizer, 
-        pose_augment=False, seed=training_args.seed
+        split='val', pose_augment=False, stride_ratio=data_args.stride_ratio, max_event_tokens=data_args.max_event_tokens,
+        min_events=data_args.min_events, tokenizer=tokenizer, load_by=data_args.load_by, seed=training_args.seed
     )
 
     # Only log sizes on the main process to avoid clutter in DDP

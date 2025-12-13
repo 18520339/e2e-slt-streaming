@@ -59,13 +59,13 @@ What it does:
 
 Common flags (subset shown):
 
--   Data: `--max_caption_len 32`, `--val_stride_ratio 0.9`
+-   Data: `--max_event_tokens 32`, `--stride_ratio 0.9`
 -   Metrics: `--alpha 0.3`, `--ranking_temperature 2.0`, `--top_k 10`, `--temporal_iou_thresholds 0.3 0.5 0.7 0.9`
 -   Trainer: `--num_train_epochs 100`, `--per_device_train_batch_size 32`, `--per_device_eval_batch_size 64`, `--fp16 true`, `--output_dir ./outputs/run1`
 
 Tips:
 
--   To change window length or FPS, edit `config.py`. To change caption length, pass `--max_caption_len`.
+-   To change window length or FPS, edit `config.py`. To change caption length, pass `--max_event_tokens`.
 -   Metrics are computed during evaluation using `evaluation/metrics.py` (hooked via `compute_metrics`).
 -   Trainer logs/checkpoints go to `--output_dir` (default `/tmp`). The final model is also saved to `CHECKPOINT_DIR` from `config.py`.
 
