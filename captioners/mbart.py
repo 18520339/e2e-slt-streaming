@@ -15,7 +15,7 @@ class MBartDecoderCaptioner(nn.Module):
     def __init__(
         self, config: DeformableDetrConfig, vocab_size: int, 
         bos_token_id: int, eos_token_id: int, pad_token_id: int,
-        decoder_start_token_id: int, max_tokens_len: int, 
+        decoder_start_token_id: int, max_event_tokens: int, 
         dropout_rate: float, num_layers: int, # Number of mBart decoder layers
     ):
         super().__init__()
@@ -25,7 +25,7 @@ class MBartDecoderCaptioner(nn.Module):
         self.eos_token_id = eos_token_id
         self.pad_token_id = pad_token_id
         self.decoder_start_token_id = decoder_start_token_id
-        self.max_tokens_len = max_tokens_len
+        self.max_event_tokens = max_event_tokens
         
         # Create MBart configuration for decoder-only model
         self.mbart_config = MBartConfig(
@@ -37,7 +37,7 @@ class MBartDecoderCaptioner(nn.Module):
             dropout=dropout_rate,
             attention_dropout=dropout_rate,
             activation_dropout=dropout_rate,
-            max_position_embeddings=max_tokens_len + 10,  # Add some buffer
+            max_position_embeddings=max_event_tokens + 10,  # Add some buffer
             bos_token_id=bos_token_id,
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
@@ -123,7 +123,7 @@ class MBartDecoderCaptioner(nn.Module):
         generation_outputs = self.mbart_decoder.generate(
             inputs_embeds=encoder_hidden_states,
             attention_mask=encoder_attention_mask,
-            max_new_tokens=self.max_tokens_len,
+            max_new_tokens=self.max_event_tokens,
             do_sample=not sample_max,
             temperature=temperature if not sample_max else 1.0,
             num_beams=num_beams, top_k=top_k, top_p=top_p,
@@ -150,29 +150,29 @@ class MBartDecoderCaptioner(nn.Module):
         else:
             seq_log_probs = torch.zeros(num_events, 0, device=decoder_hidden_states.device)
         
-        # Pad or truncate seq_tokens to max_tokens_len for consistency
-        if raw_sequences.size(1) < self.max_tokens_len:
+        # Pad or truncate seq_tokens to max_event_tokens for consistency
+        if raw_sequences.size(1) < self.max_event_tokens:
             padding = torch.full(
-                (num_events, self.max_tokens_len - raw_sequences.size(1)), self.pad_token_id,
+                (num_events, self.max_event_tokens - raw_sequences.size(1)), self.pad_token_id,
                 dtype=torch.long, device=decoder_hidden_states.device
             )
             seq_tokens = torch.cat([raw_sequences, padding], dim=1)
         else:
-            seq_tokens = raw_sequences[:, :self.max_tokens_len]
+            seq_tokens = raw_sequences[:, :self.max_event_tokens]
         
         # Build full log probs: [0 for start token] + [generated log probs] + [-inf for padding]
         bos_log_probs = torch.zeros(num_events, 1, device=decoder_hidden_states.device)
         seq_log_probs = torch.cat([bos_log_probs, seq_log_probs], dim=1)  # (B*Q, 1 + num_generated)
         
-        # Pad or truncate seq_log_probs to max_tokens_len for consistency
-        if seq_log_probs.size(1) < self.max_tokens_len:
+        # Pad or truncate seq_log_probs to max_event_tokens for consistency
+        if seq_log_probs.size(1) < self.max_event_tokens:
             padding = torch.full(
-                (num_events, self.max_tokens_len - seq_log_probs.size(1)), float('-inf'), 
+                (num_events, self.max_event_tokens - seq_log_probs.size(1)), float('-inf'), 
                 dtype=seq_log_probs.dtype, device=decoder_hidden_states.device
             )
             seq_log_probs = torch.cat([seq_log_probs, padding], dim=1)
         else:
-            seq_log_probs = seq_log_probs[:, :self.max_tokens_len]
+            seq_log_probs = seq_log_probs[:, :self.max_event_tokens]
         
         # Return structured (B, Q, L)
-        return seq_log_probs.view(batch_size, num_queries, self.max_tokens_len), seq_tokens.view(batch_size, num_queries, self.max_tokens_len)
+        return seq_log_probs.view(batch_size, num_queries, self.max_event_tokens), seq_tokens.view(batch_size, num_queries, self.max_event_tokens)

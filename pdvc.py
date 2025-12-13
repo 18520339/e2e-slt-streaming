@@ -64,7 +64,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     def __init__(
         self, config: DeformableDetrConfig, captioner_class, vocab_size: int, 
         bos_token_id: int, eos_token_id: int, pad_token_id: int, decoder_start_token_id: int = None,
-        temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_tokens_len=20,
+        temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_event_tokens=20,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ):
         super().__init__(config)
@@ -78,7 +78,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.caption_head = captioner_class(
             config, vocab_size=vocab_size, 
             bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
-            decoder_start_token_id=decoder_start_token_id, max_tokens_len=max_tokens_len,
+            decoder_start_token_id=decoder_start_token_id, max_event_tokens=max_event_tokens,
             dropout_rate=cap_dropout_rate, num_layers=num_cap_layers, 
         )
         bias_value = -math.log((1 - 0.01) / 0.01)
@@ -202,7 +202,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 match_indices = self.matcher({'logits': outputs_class, 'pred_boxes': outputs_coords[-1]}, labels)
                 
                 # Align target seq_tokens to query order for teacher forcing (shape: B x Q x L)
-                max_len = self.caption_head[layer].max_tokens_len
+                max_len = self.caption_head[layer].max_event_tokens
                 aligned_tokens = torch.zeros(B, Q, max_len, dtype=torch.long, device=device)
                 
                 for b, (src_idx, tgt_idx) in enumerate(match_indices):
@@ -263,14 +263,14 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
 
 
 if __name__ == '__main__':
-    from loader import get_loader
+    from loader import get_streaming_loader
     from transformers import AutoTokenizer
     from postprocess import post_process_object_detection
 
     # Fetch 1 batch from Data loader
-    max_tokens_len = 12
+    max_event_tokens = 12
     tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
-    train_loader = get_loader(split='train', batch_size=4, tokenizer=tokenizer, max_tokens_len=max_tokens_len)
+    train_loader = get_streaming_loader(split='train', batch_size=4, tokenizer=tokenizer, max_event_tokens=max_event_tokens)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     batch = next(iter(train_loader))
@@ -314,7 +314,7 @@ if __name__ == '__main__':
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
-        max_tokens_len=max_tokens_len,
+        max_event_tokens=max_event_tokens,
         cap_dropout_rate=0.1,
         num_cap_layers=3,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}

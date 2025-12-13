@@ -71,7 +71,7 @@ class LSTMCaptioner(nn.Module):
     def __init__(
         self, config: DeformableDetrConfig, vocab_size: int, 
         bos_token_id: int, eos_token_id: int, pad_token_id: int,
-        decoder_start_token_id: int, max_tokens_len: int,  
+        decoder_start_token_id: int, max_event_tokens: int,  
         dropout_rate: float, num_layers: int # Number of LSTM layers
     ):
         super().__init__()
@@ -83,7 +83,7 @@ class LSTMCaptioner(nn.Module):
         self.decoder_start_token_id = None
         
         self.num_layers = num_layers
-        self.max_tokens_len = max_tokens_len
+        self.max_event_tokens = max_event_tokens
         self.deformable_rnn = DeformableLSTM(config, num_layers, dropout_rate)
 
         self.schedule_sampling_prob = 0.25
@@ -161,14 +161,14 @@ class LSTMCaptioner(nn.Module):
         
         # Initialize with <BOS> for all events (B*Q)
         token = torch.full((num_events,), self.bos_token_id, dtype=torch.long, device=decoder_hidden_states.device)
-        seq_log_probs = torch.full((num_events, self.max_tokens_len), float('-inf'), dtype=torch.float, device=decoder_hidden_states.device)
-        seq_tokens = torch.full((num_events, self.max_tokens_len), self.pad_token_id, dtype=torch.long, device=decoder_hidden_states.device)
+        seq_log_probs = torch.full((num_events, self.max_event_tokens), float('-inf'), dtype=torch.float, device=decoder_hidden_states.device)
+        seq_tokens = torch.full((num_events, self.max_event_tokens), self.pad_token_id, dtype=torch.long, device=decoder_hidden_states.device)
         
         seq_log_probs[:, 0] = 0.0
         seq_tokens[:, 0] = token 
         done = torch.zeros_like(token, dtype=torch.bool)  # (B*Q,)
 
-        for t in range(1, self.max_tokens_len):
+        for t in range(1, self.max_event_tokens):
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
             if sample_max: # Greedy decoding
                 step_log_probs, next_token = torch.max(output.data, 1)
@@ -188,4 +188,4 @@ class LSTMCaptioner(nn.Module):
             token = next_token # Feed next token
 
         # Return structured (B, Q, L)
-        return seq_log_probs.view(batch_size, num_queries, self.max_tokens_len), seq_tokens.view(batch_size, num_queries, self.max_tokens_len)
+        return seq_log_probs.view(batch_size, num_queries, self.max_event_tokens), seq_tokens.view(batch_size, num_queries, self.max_event_tokens)

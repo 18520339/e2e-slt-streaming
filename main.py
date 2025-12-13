@@ -50,7 +50,8 @@ class DataArguments:
     tokenizer_name: str = field(default='facebook/mbart-large-cc25')
     pose_augment: bool = field(default=False, metadata={'help': 'Apply pose augmentation during training'})
     stride_ratio: float = field(default=0.9)
-    max_tokens_len: int = field(default=40)
+    max_window_tokens: int = field(default=256)
+    max_event_tokens: int = field(default=40)
     max_tries: int = field(default=20)
     min_events: int = field(default=1)
     load_by: str = field(default='window')
@@ -104,13 +105,13 @@ def main():
     # Data Loading
     tokenizer = AutoTokenizer.from_pretrained(data_args.tokenizer_name, src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
     train_dataset = DVCDataset(
-        split='train', max_tries=data_args.max_tries, max_tokens_len=data_args.max_tokens_len,
+        split='train', max_tries=data_args.max_tries, max_event_tokens=data_args.max_event_tokens,
         min_events=data_args.min_events, load_by=data_args.load_by, tokenizer=tokenizer, 
         pose_augment=data_args.pose_augment, seed=training_args.seed,
         
     )
     val_dataset = DVCDataset(
-        split='val', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
+        split='val', stride_ratio=data_args.stride_ratio, max_event_tokens=data_args.max_event_tokens,
         min_events=data_args.min_events, load_by=data_args.load_by, tokenizer=tokenizer, 
         pose_augment=False, seed=training_args.seed
     )
@@ -148,7 +149,7 @@ def main():
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
-        max_tokens_len=data_args.max_tokens_len,
+        max_event_tokens=data_args.max_event_tokens,
         num_cap_layers=model_args.num_cap_layers,
         cap_dropout_rate=model_args.cap_dropout_rate,
         weight_dict={
@@ -194,14 +195,14 @@ def main():
     
     # Evaluate on test sets
     test_dataset = DVCDataset(
-        split='test', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
+        split='test', stride_ratio=data_args.stride_ratio, max_event_tokens=data_args.max_event_tokens,
         min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
     )
     print(f'Test dataset: {len(test_dataset)} samples')
     eval_trainer.evaluate(eval_dataset=test_dataset, metric_key_prefix='test')
     
     # challenge_test_dataset = DVCDataset(
-    #     split='challenge_test', stride_ratio=data_args.stride_ratio, max_tokens_len=data_args.max_tokens_len,
+    #     split='challenge_test', stride_ratio=data_args.stride_ratio, max_event_tokens=data_args.max_event_tokens,
     #     min_events=1, load_by='window', tokenizer=tokenizer, seed=2025
     # )
     # print(f'Challenge test dataset: {len(challenge_test_dataset)} samples')
