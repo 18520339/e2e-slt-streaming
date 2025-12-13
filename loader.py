@@ -11,14 +11,16 @@ from config import *
 
 
 class DVCDataset(Dataset):
-    def __init__(self, split, stride_ratio=0.5, max_window_tokens=256, max_event_tokens=20, max_tries=10, 
-                 min_events=1, tokenizer=None, pose_augment=False, load_by='window', seed=42):
+    def __init__(self, split, max_tries=10, pose_augment=False, stride_ratio=0.5, max_window_tokens=256, 
+                 max_event_tokens=20, min_events=1, tokenizer=None, load_by='window', seed=42):
         '''
         PyTorch Dataset for DVC with on-the-fly sliding window sampling.
         Args:
             split: 'train', 'val', or 'test'
-            stride_ratio: For val/test sequential sampling (e.g., 0.5 for 50% overlap). Only used in val/test.
             max_tries: Max resamples for train windows with < min_events. Only used in train.
+            pose_augment: Whether to apply pose augmentation from GISLR competition's best solution (train only).
+            stride_ratio: For val/test sequential sampling (e.g., 0.5 for 50% overlap). Only used in val/test.
+            max_window_tokens: Max paragraph token length in a window for padding/truncation
             max_event_tokens: Max caption token length for padding/truncation
             min_events: Min full events (subtitles) in a window
             tokenizer: HuggingFace tokenizer for text processing
@@ -30,17 +32,20 @@ class DVCDataset(Dataset):
         # assert split in ['train', 'val', 'test'], f"Split must be 'train', 'val', or 'test', but got {split}"
         self.split = split
         self.window_size_frames = int(WINDOW_DURATION_SECONDS * FPS)
+        
+        self.max_tries = max_tries
+        self.pose_augment = pose_augment if split == 'train' else False # Augmentation only for training
         self.stride = int(self.window_size_frames * stride_ratio)
+        
         self.max_window_tokens = max_window_tokens
         self.max_event_tokens = max_event_tokens
-        self.max_tries = max_tries
         self.min_events = min_events
+        
+        self.tokenizer = tokenizer
         self.load_by = load_by
         assert self.load_by in ['window', 'video'], "load_by must be 'window' or 'video'"
         np.random.seed(seed)
 
-        self.tokenizer = tokenizer
-        self.pose_augment = pose_augment if split == 'train' else False # Augmentation only for training
         self.video_ids = self.load_subset(split)
         self.video_metadata = {} # Precomputed metadata per video for efficiency
         self.eval_windows = [] # Store windows for val/test splits
@@ -211,6 +216,7 @@ class DVCDataset(Dataset):
                 labels['class_labels'].append(0) # Default single class 0
                 labels['boxes'].append([center, width])
                 labels['seq_tokens'].append(sub['text'])
+        labels['paragraph_tokens'] = ' '.join(labels['seq_tokens']) if labels['seq_tokens'] else '' # Concatenate all subtitles into a single paragraph
     
         # Convert to tensors
         if labels['class_labels']:
@@ -220,12 +226,16 @@ class DVCDataset(Dataset):
                 labels['seq_tokens'], add_special_tokens=True, truncation=True, 
                 padding='max_length', max_length=self.max_event_tokens, return_tensors='pt'
             )['input_ids']
-            labels['paragraph_tokens'] = torch.cat([labels['seq_tokens']], dim=0) # Concatenate all subtitles into a single paragraph
+            labels['paragraph_tokens'] = self.tokenizer( # For computing paragraph-level metrics and training non-streaming models in a streaming manner
+                labels['paragraph_tokens'], add_special_tokens=True, truncation=True,
+                padding='max_length', max_length=self.max_window_tokens, return_tensors='pt'
+            )['input_ids'].squeeze(0) # Remove batch dim
+
         else: # No valid subtitles in window
             labels['class_labels'] = torch.empty(0, dtype=torch.long)
             labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
             labels['seq_tokens'] = torch.empty(0, self.max_event_tokens, dtype=torch.long)
-            labels['paragraph_tokens'] = torch.empty(0, dtype=torch.long)
+            labels['paragraph_tokens'] = torch.empty(self.max_window_tokens, dtype=torch.long)
 
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels
@@ -370,14 +380,13 @@ def trainer_collate_fn(batch):
         'labels': labels # List of dicts (includes 'frame_mask')
     }
     
-
 def get_streaming_loader(
-    split='train', batch_size=32, stride_ratio=0.5, max_event_tokens=20, max_tries=10, 
-    min_events=1, tokenizer=None, pose_augment=False, load_by='window', seed=42
+    split='train', batch_size=32, max_tries=10, pose_augment=False, stride_ratio=0.5, 
+    max_event_tokens=20, min_events=1, tokenizer=None, load_by='window', seed=42
 ):
     dataset = DVCDataset( # Create a data loader for a specific split
-        split=split, stride_ratio=stride_ratio, max_event_tokens=max_event_tokens, max_tries=max_tries, 
-        min_events=min_events, tokenizer=tokenizer, pose_augment=pose_augment, load_by=load_by, seed=seed
+        split=split, max_tries=max_tries, pose_augment=pose_augment, stride_ratio=stride_ratio, 
+        max_event_tokens=max_event_tokens, min_events=min_events, tokenizer=tokenizer, load_by=load_by, seed=seed
     )
     return DataLoader(
         dataset, batch_size=batch_size,
@@ -389,7 +398,7 @@ def get_streaming_loader(
 if __name__ == '__main__':
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
-    train_loader = get_streaming_loader('train', batch_size=4, tokenizer=tokenizer, pose_augment=True)
+    train_loader = get_streaming_loader('train', batch_size=4, pose_augment=True, tokenizer=tokenizer)
     
     for batch in train_loader:
         video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']

@@ -270,7 +270,7 @@ if __name__ == '__main__':
     # Fetch 1 batch from Data loader
     max_event_tokens = 12
     tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
-    train_loader = get_streaming_loader(split='train', batch_size=4, tokenizer=tokenizer, max_event_tokens=max_event_tokens)
+    train_loader = get_streaming_loader(split='train', batch_size=4, max_event_tokens=max_event_tokens, tokenizer=tokenizer)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     batch = next(iter(train_loader))
