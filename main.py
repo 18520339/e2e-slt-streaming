@@ -47,7 +47,6 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    tokenizer_name: str = field(default='facebook/mbart-large-cc25')
     max_tries: int = field(default=20, metadata={'help': 'Maximum attempts to find a valid window with at least one event'})
     noise_rate: float = field(default=0.15, metadata={'help': 'Proportion of words to mask for noise injection during non-streaming training'})
     pose_augment: bool = field(default=False, metadata={'help': 'Apply pose augmentation during training'})
@@ -104,7 +103,7 @@ def main():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # Data Loading
-    tokenizer = AutoTokenizer.from_pretrained(data_args.tokenizer_name, src_lang='en_XX', tgt_lang='en_XX', use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
     train_dataset = DVCDataset(
         split='train', tokenizer=tokenizer, max_tries=data_args.max_tries, noise_rate=data_args.noise_rate, pose_augment=data_args.pose_augment, 
         max_window_tokens=data_args.max_window_tokens, max_event_tokens=data_args.max_event_tokens,
