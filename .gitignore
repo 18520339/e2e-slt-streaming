@@ -1,7 +1,9 @@
 __pycache__/
 dataset/BOBSL/
+captioners/trimmed_*
 pdvc/
 DWPose/
 backup/
 *.zip
-*.pt2
+*.pt
+*.safetensors

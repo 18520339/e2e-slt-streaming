@@ -1,10 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from types import SimpleNamespace
 from typing import Optional
-
-from hftrim.ModelTrimmers import MBartTrimmer
 from transformers import AutoTokenizer, DeformableDetrConfig, MBartConfig, MBartForCausalLM
 from transformers.models.mbart.modeling_mbart import shift_tokens_right
 
@@ -30,29 +27,30 @@ class MBartDecoderCaptioner(nn.Module):
         self.decoder_start_token_id = decoder_start_token_id
         self.max_event_tokens = max_event_tokens
         
-        # Reduce the size of MBart via vocabulary trimming using https://github.com/IamAdiSri/hf-trim
+        # Reduce the size of MBart via vocabulary trimming using https://github.com/IamAdiSri/hf-trim       
         self.mbart_config = MBartConfig( # Create MBart configuration for decoder-only model
             vocab_size=vocab_size,
             d_model=config.d_model,
-            decoder_layers=num_layers,
-            decoder_attention_heads=8,
+            encoder_ffn_dim=config.d_model * 4,  # Standard transformer practice
             decoder_ffn_dim=config.d_model * 4,  # Standard transformer practice
+            encoder_layers=num_layers,
+            decoder_layers=num_layers,
+            num_hidden_layers=num_layers,
+            encoder_attention_heads=8,
+            decoder_attention_heads=8,
+            # max_position_embeddings=max_event_tokens + 10,  # Add some buffer
+            # attention_dropout=dropout_rate,
+            # activation_dropout=dropout_rate,
+            activation_function='relu',
             dropout=dropout_rate,
-            attention_dropout=dropout_rate,
-            activation_dropout=dropout_rate,
-            max_position_embeddings=max_event_tokens + 10,  # Add some buffer
             bos_token_id=bos_token_id,
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
             forced_eos_token_id=eos_token_id,
             scale_embedding=True,
         )
-        mbart_decoder = MBartForCausalLM.from_pretrained('facebook/mbart-large-cc25', config=self.mbart_config, ignore_mismatched_sizes=True)
-        mbart_decoder = MBartTrimmer(mbart_decoder, self.mbart_config, SimpleNamespace(pad_token_id=pad_token_id)) # Dummy tokenizer with pad_token_id
-        mbart_decoder.make_weights(range(vocab_size))
-        mbart_decoder.make_model()
-        self.mbart_decoder = mbart_decoder.trimmed_model
-
+        self.mbart_decoder = MBartForCausalLM.from_pretrained('captioners/trimmed_mbart', config=self.mbart_config, ignore_mismatched_sizes=True)
+        
         # Cross-attention projection: project DETR query hidden states to match decoder's expected encoder hidden states
         # MBart expects encoder_hidden_states, so we'll provide decoder_hidden_states as 'encoder' input
         self.query_projection = nn.Linear(config.d_model, config.d_model)
