@@ -269,10 +269,11 @@ if __name__ == '__main__':
 
     # Fetch 1 batch from Data loader
     max_event_tokens = 12
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
-    train_loader = get_loader(split='train', tokenizer=tokenizer, batch_size=4, max_event_tokens=max_event_tokens)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
+    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    if tokenizer.mask_token is None: tokenizer.add_special_tokens({'mask_token': '[MASK]'})
+    
+    train_loader = get_loader(split='train', tokenizer=tokenizer, batch_size=4, max_event_tokens=max_event_tokens)
     batch = next(iter(train_loader))
     video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']
     pixel_values = batch['pixel_values'].to(device)
@@ -288,9 +289,9 @@ if __name__ == '__main__':
     
     # Model config
     config = DeformableDetrConfig(
-        d_model=256,
-        encoder_layers=3,
-        decoder_layers=3,
+        d_model=1024,
+        encoder_layers=2,
+        decoder_layers=2,
         encoder_attention_heads=8,
         decoder_attention_heads=8,
         encoder_n_points=4,
@@ -317,7 +318,7 @@ if __name__ == '__main__':
         max_event_tokens=max_event_tokens,
         cap_dropout_rate=0.1,
         num_cap_layers=3,
-        weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
+        weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2}
     ).to(device)
     
     total_params = sum(p.numel() for p in model.parameters())
