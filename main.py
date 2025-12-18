@@ -21,7 +21,7 @@ def is_bfloat16_supported(): # Checks if the current device supports bfloat16
 
 @dataclass
 class ModelArguments:
-    d_model: int = field(default=512)
+    d_model: int = field(default=1024)
     encoder_layers: int = field(default=2)
     decoder_layers: int = field(default=2)
     encoder_attention_heads: int = field(default=8)
@@ -29,7 +29,7 @@ class ModelArguments:
     encoder_n_points: int = field(default=4)
     decoder_n_points: int = field(default=4)
     num_feature_levels: int = field(default=4, metadata={"help": "The number of input feature levels"})
-    num_queries: int = field(default=20, metadata={"help": "Maximum number of events a window can have"})
+    num_queries: int = field(default=100, metadata={"help": "Maximum number of events a window can have"})
     num_labels: int = field(default=1, metadata={"help": "Single foreground class for caption"})
     auxiliary_loss: bool = field(default=True, metadata={"help": "The training step may spend a time in per-layer caption alignment and Hungarian matching"})
     class_cost: float = field(default=2, metadata={"help": "Relative weight of the classification error"})
@@ -52,14 +52,14 @@ class DataArguments:
     pose_augment: bool = field(default=False, metadata={'help': 'Apply pose augmentation during training'})
     stride_ratio: float = field(default=0.9, metadata={'help': 'Stride ratio for window sampling during validation/testing'})
     max_window_tokens: int = field(default=512, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
-    max_event_tokens: int = field(default=40, metadata={'help': 'Maximum number of tokens per event/caption'})
+    max_event_tokens: int = field(default=64, metadata={'help': 'Maximum number of tokens per event/caption'})
     min_events: int = field(default=1, metadata={'help': 'Minimum number of events in a window'})
     load_by: str = field(default='window', metadata={'help': 'Load data by "window" or by "video"'})
 
     # Metrics/Ranking
     ranking_temperature: float = field(default=2.0, metadata={"help": "Exponent T in caption score normalization by length^T"})
     alpha: float = field(default=0.3, metadata={"help": "Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score"})
-    top_k: int = field(default=20, metadata={"help": "Should be num_queries during training"})
+    top_k: int = field(default=20, metadata={"help": "Keep top k events during evaluation for metrics computation"})
     temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
     soda_recursion_limit: int = field(default=0, metadata={"help": "Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations"})
 
@@ -67,13 +67,13 @@ class DataArguments:
 @dataclass
 class CustomTrainingArguments(TrainingArguments):
     output_dir: str = field(default='/tmp', metadata={"help": "Directory for checkpoints and logs"})
-    num_train_epochs: float = field(default=100, metadata={"help": "Total number of training epochs"})
+    num_train_epochs: float = field(default=200, metadata={"help": "Total number of training epochs"})
     save_safetensors: bool = field(default=False, metadata={"help": "Disable safe serialization to avoid the error"})
     
     # Data processing
     # auto_find_batch_size=True, # Find batch size that fit memory via exponential decay, avoiding CUDA OOM
-    per_device_train_batch_size: int = field(default=32, metadata={"help": "Effective batch size = per_device_train_batch_size x gradient_accumulation_steps x num_devices"})
-    per_device_eval_batch_size: int = field(default=64, metadata={"help": "Faster evaluation during training"})
+    per_device_train_batch_size: int = field(default=64, metadata={"help": "Effective batch size = per_device_train_batch_size x gradient_accumulation_steps x num_devices"})
+    per_device_eval_batch_size: int = field(default=128, metadata={"help": "Faster evaluation during training"})
     dataloader_num_workers: int = field(default=4, metadata={"help": "Number of subprocesses to use for data loading"})
 
     # Precision & optimization
@@ -185,7 +185,7 @@ def main():
             compute_metrics,
             ranking_temperature=data_args.ranking_temperature,   # Exponent T in caption score normalization by length^T
             alpha=data_args.alpha,  # Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score
-            top_k=data_args.top_k,  # Should be num_queries during training
+            top_k=data_args.top_k,
             temporal_iou_thresholds=data_args.temporal_iou_thresholds,
             tokenizer=tokenizer,
             soda_recursion_limit=data_args.soda_recursion_limit, # 0 to disable for faster calculations
