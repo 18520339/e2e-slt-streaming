@@ -64,7 +64,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
     def __init__(
         self, config: DeformableDetrConfig, captioner_class, vocab_size: int, 
         bos_token_id: int, eos_token_id: int, pad_token_id: int, decoder_start_token_id: int = None,
-        temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_event_tokens=20,
+        temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_event_tokens=20, max_events=10,
         weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
     ):
         super().__init__(config)
@@ -72,14 +72,14 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.matcher = DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
         
         # Detection heads on top: class + 2D temporal box (center, width)
-        self.count_head = nn.Linear(config.d_model, config.num_queries + 1)  # Predict count of events in [0, num_queries]
+        self.count_head = nn.Linear(config.d_model, max_events + 1)  # Predict count of events in [0, num_queries]
         self.class_head = nn.Linear(config.d_model, config.num_labels)       # Num of foreground classes, no 'no-object' here
         self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
         self.caption_head = captioner_class(
             config, vocab_size=vocab_size, 
             bos_token_id=bos_token_id, eos_token_id=eos_token_id, pad_token_id=pad_token_id,
-            decoder_start_token_id=decoder_start_token_id, max_event_tokens=max_event_tokens,
-            dropout_rate=cap_dropout_rate, num_layers=num_cap_layers, 
+            decoder_start_token_id=decoder_start_token_id if decoder_start_token_id else bos_token_id, 
+            max_event_tokens=max_event_tokens, dropout_rate=cap_dropout_rate, num_layers=num_cap_layers, 
         )
         bias_value = -math.log((1 - 0.01) / 0.01)
         self.class_head.bias.data = torch.ones(config.num_labels) * bias_value
@@ -268,12 +268,12 @@ if __name__ == '__main__':
     from postprocess import post_process_object_detection
 
     # Fetch 1 batch from Data loader
-    max_event_tokens = 12
+    max_events, max_event_tokens = 10, 12
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
     if tokenizer.mask_token is None: tokenizer.add_special_tokens({'mask_token': '[MASK]'})
     
-    train_loader = get_loader(split='train', tokenizer=tokenizer, batch_size=4, max_event_tokens=max_event_tokens)
+    train_loader = get_loader(split='train', tokenizer=tokenizer, batch_size=4, max_events=max_events, max_event_tokens=max_event_tokens)
     batch = next(iter(train_loader))
     video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']
     pixel_values = batch['pixel_values'].to(device)
@@ -315,9 +315,10 @@ if __name__ == '__main__':
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
-        max_event_tokens=max_event_tokens,
-        cap_dropout_rate=0.1,
         num_cap_layers=3,
+        cap_dropout_rate=0.1,
+        max_event_tokens=max_event_tokens,
+        max_events=max_events,
         weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2}
     ).to(device)
     
@@ -347,7 +348,7 @@ if __name__ == '__main__':
             print('- pred_counts:', out.pred_counts.shape)
             print('- pred_cap_logits:', out.pred_cap_logits.shape)
             print('- pred_cap_tokens:', out.pred_cap_tokens.shape)
-            top_k, threshold = 10, 0.5 
+            top_k, threshold = max_events, 0.5 
         else:
             print('\n--- Inference step with ground truth proposals (with_box_refine=False) ---')
             out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, labels=labels, return_dict=True)

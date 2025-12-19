@@ -51,15 +51,16 @@ class DataArguments:
     noise_rate: float = field(default=0.15, metadata={'help': 'Proportion of words to mask for noise injection during non-streaming training'})
     pose_augment: bool = field(default=False, metadata={'help': 'Apply pose augmentation during training'})
     stride_ratio: float = field(default=0.9, metadata={'help': 'Stride ratio for window sampling during validation/testing'})
-    max_window_tokens: int = field(default=512, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
-    max_event_tokens: int = field(default=64, metadata={'help': 'Maximum number of tokens per event/caption'})
     min_events: int = field(default=1, metadata={'help': 'Minimum number of events in a window'})
+    max_events: int = field(default=10, metadata={'help': 'Maximum number of events in a window'})
+    max_event_tokens: int = field(default=64, metadata={'help': 'Maximum number of tokens per event/caption'})
+    max_window_tokens: int = field(default=256, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
     load_by: str = field(default='window', metadata={'help': 'Load data by "window" or by "video"'})
 
     # Metrics/Ranking
     ranking_temperature: float = field(default=2.0, metadata={"help": "Exponent T in caption score normalization by length^T"})
     alpha: float = field(default=0.3, metadata={"help": "Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score"})
-    top_k: int = field(default=20, metadata={"help": "Keep top k events during evaluation for metrics computation"})
+    top_k: int = field(default=10, metadata={"help": "Keep top k events during evaluation for metrics computation"})
     temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
     soda_recursion_limit: int = field(default=0, metadata={"help": "Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations"})
 
@@ -106,14 +107,13 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
     train_dataset = DVCDataset(
         split='train', tokenizer=tokenizer, max_tries=data_args.max_tries, noise_rate=data_args.noise_rate, pose_augment=data_args.pose_augment, 
-        max_window_tokens=data_args.max_window_tokens, max_event_tokens=data_args.max_event_tokens,
-        min_events=data_args.min_events, load_by=data_args.load_by, seed=training_args.seed
-        
+        min_events=data_args.min_events, max_events=data_args.max_events, max_window_tokens=data_args.max_window_tokens, 
+        max_event_tokens=data_args.max_event_tokens, load_by=data_args.load_by, seed=training_args.seed
     )
     val_dataset = DVCDataset(
         split='val', tokenizer=tokenizer, pose_augment=False, stride_ratio=data_args.stride_ratio, 
-        max_event_tokens=data_args.max_event_tokens, max_window_tokens=data_args.max_window_tokens,
-        min_events=data_args.min_events, load_by=data_args.load_by, seed=training_args.seed
+        min_events=data_args.min_events, max_events=data_args.max_events, max_event_tokens=data_args.max_event_tokens, 
+        max_window_tokens=data_args.max_window_tokens, load_by=data_args.load_by, seed=training_args.seed
     )
 
     # Only log sizes on the main process to avoid clutter in DDP
@@ -149,9 +149,10 @@ def main():
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
-        max_event_tokens=data_args.max_event_tokens,
         num_cap_layers=model_args.num_cap_layers,
         cap_dropout_rate=model_args.cap_dropout_rate,
+        max_event_tokens=data_args.max_event_tokens,
+        max_events=data_args.max_events,
         weight_dict={
             'loss_ce': model_args.class_cost, 'loss_bbox': model_args.bbox_cost, 'loss_giou': model_args.giou_cost, 
             'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost

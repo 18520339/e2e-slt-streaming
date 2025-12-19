@@ -67,7 +67,7 @@ Common flags (subset shown):
 
 -   Data: `--max_event_tokens 64`, `--stride_ratio 0.9`
 -   Model: `--d_model 1024`, `--num_queries 100`, `--encoder_layers 2`, `--decoder_layers 2`, `--num_cap_layers 3`
--   Metrics: `--alpha 0.3`, `--ranking_temperature 2.0`, `--top_k 20`, `--temporal_iou_thresholds 0.3 0.5 0.7 0.9`
+-   Metrics: `--alpha 0.3`, `--ranking_temperature 2.0`, `--top_k 10`, `--temporal_iou_thresholds 0.3 0.5 0.7 0.9`
 -   Trainer: `--num_train_epochs 200`, `--per_device_train_batch_size 64`, `--per_device_eval_batch_size 128`, `--output_dir ./outputs/run1`
 
 Tips:
