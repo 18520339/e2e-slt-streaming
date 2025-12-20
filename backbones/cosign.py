@@ -55,6 +55,7 @@ class CoSign1s(nn.Module):
             nn.ReLU(inplace=True)
         )
 
+        self.projections = {}
         for module in KPS_MODULES.keys():
             self.graph[module] = Graph(layout=f'{module}', strategy='distance', max_hop=1)
             A[module] = torch.tensor(self.graph[module].A, dtype=torch.float32, requires_grad=False)
@@ -63,9 +64,12 @@ class CoSign1s(nn.Module):
                 64, level, (temporal_kernel, spatial_kernel_size),
                 A[module].clone(), adaptive
             )
+            # Create learnable projection for each part to aggregate keypoint information
+            num_keypoints = KPS_MODULES[module]['kps_rel_range'][1] - KPS_MODULES[module]['kps_rel_range'][0]
+            self.projections[module] = nn.Linear(final_dim * num_keypoints, final_dim)
 
-        self.pool_func = F.avg_pool2d
         self.gcn_modules = nn.ModuleDict(self.gcn_modules)
+        self.projections = nn.ModuleDict(self.projections)
         self.fusion = nn.Sequential(nn.Linear(final_dim * len(KPS_MODULES), hidden_size), nn.ReLU(inplace=True))
         self.final_dim = final_dim
     
@@ -75,15 +79,21 @@ class CoSign1s(nn.Module):
         for module, kps_info in KPS_MODULES.items():
             kps_rng = kps_info['kps_rel_range']
             part_feat = self.gcn_modules[module](features[..., kps_rng[0]: kps_rng[1]])
-            pooled_feat = self.pool_func(part_feat, (1, kps_rng[1] - kps_rng[0])).squeeze(-1)
-            feat_list.append(pooled_feat)
-        return torch.cat(feat_list, dim=1) # Shape: [B, final_dim * parts, T]
+            
+            # Reshape from [B, final_dim, T, num_keypoints] to [B, T, final_dim * num_keypoints]
+            B, C, T, K = part_feat.shape
+            part_feat = part_feat.permute(0, 2, 1, 3).reshape(B, T, C * K)
+            
+            # Apply learnable projection to aggregate keypoint information
+            projected_feat = self.projections[module](part_feat)  # [B, T, final_dim]
+            feat_list.append(projected_feat)
+        return torch.cat(feat_list, dim=-1) # Shape: [B, T, final_dim * parts]
     
     
     def forward(self, x):
         # linear stage x.shape: [B(N), T, 77(K), 3(C)]
         static = self.linear(x).permute(0, 3, 1, 2) # [B, 64, T, 77]
-        cat_feat = self.process_part_features(static).transpose(1, 2) # [B, T, final_dim * parts]
+        cat_feat = self.process_part_features(static) # [B, T, final_dim * parts]
 
         if self.training:
             mask_view1, mask_view2 = generate_mask(cat_feat.shape, self.mask_ratio, self.final_dim)
