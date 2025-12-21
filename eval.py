@@ -1,3 +1,4 @@
+import os
 import gc
 import torch
 from functools import partial
@@ -25,17 +26,17 @@ class ModelArguments:
     decoder_attention_heads: int = field(default=8)
     encoder_n_points: int = field(default=4)
     decoder_n_points: int = field(default=4)
-    num_feature_levels: int = field(default=4, metadata={"help": "The number of input feature levels"})
-    num_queries: int = field(default=100, metadata={"help": "Maximum number of events a window can have"})
-    num_labels: int = field(default=1, metadata={"help": "Single foreground class for caption"})
-    auxiliary_loss: bool = field(default=True, metadata={"help": "The training step may spend a time in per-layer caption alignment and Hungarian matching"})
-    class_cost: float = field(default=2, metadata={"help": "Relative weight of the classification error"})
-    bbox_cost: float = field(default=0, metadata={"help": "Relative weight of the L1 error of the bounding box coordinates"})
-    giou_cost: float = field(default=4, metadata={"help": "Relative weight of the generalized IoU loss of the bounding box"})
-    counter_cost: float = field(default=2, metadata={"help": "Relative weight of the event counter loss"})
-    caption_cost: float = field(default=2, metadata={"help": "Relative weight of the captioning loss"})
+    num_feature_levels: int = field(default=4, metadata={'help': 'The number of input feature levels'})
+    num_queries: int = field(default=100, metadata={'help': 'Maximum number of events a window can have'})
+    num_labels: int = field(default=1, metadata={'help': 'Single foreground class for caption'})
+    auxiliary_loss: bool = field(default=True, metadata={'help': 'The training step may spend a time in per-layer caption alignment and Hungarian matching'})
+    class_cost: float = field(default=2, metadata={'help': 'Relative weight of the classification error'})
+    bbox_cost: float = field(default=0, metadata={'help': 'Relative weight of the L1 error of the bounding box coordinates'})
+    giou_cost: float = field(default=4, metadata={'help': 'Relative weight of the generalized IoU loss of the bounding box'})
+    counter_cost: float = field(default=2, metadata={'help': 'Relative weight of the event counter loss'})
+    caption_cost: float = field(default=2, metadata={'help': 'Relative weight of the captioning loss'})
     focal_alpha: float = field(default=0.25)
-    with_box_refine: bool = field(default=True, metadata={"help": "Learnt (True) or Ground truth proposals (False, all losses except caption loss will be disabled)"})
+    with_box_refine: bool = field(default=True, metadata={'help': 'Learnt (True) or Ground truth proposals (False, all losses except caption loss will be disabled)'})
 
     # Caption head / decoder bits
     num_cap_layers: int = field(default=3)
@@ -50,39 +51,41 @@ class DataArguments:
     stride_ratio: float = field(default=0.9, metadata={'help': 'Stride ratio for window sampling during validation/testing'})
     min_events: int = field(default=1, metadata={'help': 'Minimum number of events in a window'})
     max_events: int = field(default=10, metadata={'help': 'Maximum number of events in a window'})
-    max_event_tokens: int = field(default=64, metadata={'help': 'Maximum number of tokens per event/caption'})
-    max_window_tokens: int = field(default=256, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
-    load_by: str = field(default='window', metadata={'help': 'Load data by "window" or by "video"'})
+    max_event_tokens: int = field(default=50, metadata={'help': 'Maximum number of tokens per event/caption'})
+    max_window_tokens: int = field(default=128, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
+    load_by: str = field(default='window', metadata={'help': "Load data by 'window' or by 'video'"})
 
     # Metrics/Ranking
-    ranking_temperature: float = field(default=2.0, metadata={"help": "Exponent T in caption score normalization by length^T"})
-    alpha: float = field(default=0.3, metadata={"help": "Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score"})
-    top_k: int = field(default=10, metadata={"help": "Keep top k events during evaluation for metrics computation"})
+    ranking_temperature: float = field(default=2.0, metadata={'help': 'Exponent T in caption score normalization by length^T'})
+    alpha: float = field(default=0.3, metadata={'help': 'Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score'})
+    top_k: int = field(default=20, metadata={'help': 'Keep top k events during evaluation for metrics computation'})
     temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
-    soda_recursion_limit: int = field(default=0, metadata={"help": "Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations"})
+    soda_recursion_limit: int = field(default=0, metadata={'help': 'Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations'})
 
 
 @dataclass
 class EvalArguments:
-    checkpoint_path: str = field(default=CHECKPOINT_DIR, metadata={"help": "Path to the checkpoint directory to evaluate"})
-    output_dir: str = field(default='/tmp/eval', metadata={"help": "Directory for evaluation outputs"})
-    per_device_eval_batch_size: int = field(default=128, metadata={"help": "Batch size for evaluation"})
-    dataloader_num_workers: int = field(default=4, metadata={"help": "Number of subprocesses to use for data loading"})
-    seed: int = field(default=42, metadata={"help": "Random seed for reproducibility"})
-    fp16: bool = field(default=False, metadata={"help": "Use mixed precision evaluation"})
-    bf16: bool = field(default=False, metadata={"help": "Use bfloat16 for mixed precision evaluation"})
-    eval_val: bool = field(default=True, metadata={"help": "Evaluate on validation set"})
-    eval_test: bool = field(default=True, metadata={"help": "Evaluate on test set"})
+    checkpoint_path: str = field(default=CHECKPOINT_DIR, metadata={'help': 'Path to the checkpoint directory to evaluate'})
+    output_dir: str = field(default='/tmp/eval', metadata={'help': 'Directory for evaluation outputs'})
+    per_device_eval_batch_size: int = field(default=32, metadata={'help': 'Can be higher if greedy but should be smaller if using beam search'})
+    dataloader_num_workers: int = field(default=4, metadata={'help': 'Number of subprocesses to use for data loading'})
+    seed: int = field(default=42, metadata={'help': 'Random seed for reproducibility'})
+    fp16: bool = field(default=False, metadata={'help': 'Use mixed precision evaluation'})
+    bf16: bool = field(default=False, metadata={'help': 'Use bfloat16 for mixed precision evaluation'})
+    eval_val: bool = field(default=True, metadata={'help': 'Evaluate on validation set'})
+    eval_test: bool = field(default=True, metadata={'help': 'Evaluate on test set'})
 
 
 def main():
     # Parse CLI args
     parser = HfArgumentParser((ModelArguments, DataArguments, EvalArguments))
     model_args, data_args, eval_args = parser.parse_args_into_dataclasses()
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f'Loading checkpoint from: {eval_args.checkpoint_path}')
 
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer') # Data Loading
-    config = DeformableDetrConfig( # Model Setup
+    # Model Setup 
+    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    config = DeformableDetrConfig(
         d_model=model_args.d_model,
         encoder_layers=model_args.encoder_layers,
         decoder_layers=model_args.decoder_layers,
@@ -116,13 +119,13 @@ def main():
             'loss_ce': model_args.class_cost, 'loss_bbox': model_args.bbox_cost, 'loss_giou': model_args.giou_cost, 
             'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost
         }
-    )
-    print('Loading model weights...') # Load checkpoint
-    model = model.from_pretrained(eval_args.checkpoint_path)
+    ).to(device)
     
+    model.load_state_dict(torch.load(os.path.join(eval_args.checkpoint_path, 'pytorch_model.bin')))
     total_params = sum(p.numel() for p in model.parameters())
     print(f'Model loaded with {total_params / 1e6:.2f}M parameters')
     
+    # Evaluation
     training_args = TrainingArguments( # Create training args for Trainer (required even for evaluation)
         output_dir=eval_args.output_dir,
         per_device_eval_batch_size=eval_args.per_device_eval_batch_size,
@@ -213,5 +216,5 @@ def main():
     print('\nEvaluation complete!')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

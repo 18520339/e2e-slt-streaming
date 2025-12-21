@@ -37,10 +37,14 @@ Multi‑GPU with torchrun (recommended):
 
 ```bash
 torchrun --nproc_per_node 6 main.py \
-	--output_dir "./outputs/run1" \
+	--output_dir "./checkpoints" \
+	--max_event_tokens 64 \
+	--num_queries 100 \
+	--encoder_layers 2 \
+	--decoder_layers 2 \
+	--num_cap_layers 3 \
 	--num_train_epochs 100 \
-	--per_device_train_batch_size 64 \
-	--per_device_eval_batch_size 128 \
+	--per_device_train_batch_size 32 \
 	--weight_decay 1e-4 \
 	--learning_rate 5e-4
 ```
@@ -49,10 +53,14 @@ Multi‑GPU with accelerate:
 
 ```bash
 accelerate launch --num_processes 6 main.py \
-	--output_dir "./outputs/run1" \
+	--output_dir "./checkpoints" \
+	--max_event_tokens 50 \
+	--num_queries 100 \
+	--encoder_layers 2 \
+	--decoder_layers 2 \
+	--num_cap_layers 3 \
 	--num_train_epochs 100 \
-	--per_device_train_batch_size 64 \
-	--per_device_eval_batch_size 128 \
+	--per_device_train_batch_size 32 \
 	--weight_decay 1e-4 \
 	--learning_rate 5e-4
 ```
@@ -66,9 +74,9 @@ What it does:
 
 Common training flags (subset shown):
 
--   Data: `--max_event_tokens 64`, `--stride_ratio 0.9`, `--noise_rate 0.15`, `--pose_augment`
+-   Data: `--max_event_tokens 50`, `--stride_ratio 0.9`, `--noise_rate 0.15`, `--pose_augment`
 -   Model: `--d_model 1024`, `--num_queries 100`, `--encoder_layers 2`, `--decoder_layers 2`, `--num_cap_layers 3`
--   Trainer: `--num_train_epochs 200`, `--per_device_train_batch_size 64`, `--output_dir ./outputs/run1`, `--learning_rate 5e-4`, `--weight_decay 1e-4`
+-   Trainer: `--num_train_epochs 100`, `--per_device_train_batch_size 32`, `--output_dir ./checkpoints`, `--learning_rate 5e-4`, `--weight_decay 1e-4`
 
 Tips:
 
@@ -84,23 +92,8 @@ After training, use `eval.py` to evaluate the trained model on validation and/or
 **On multi-GPU machines**, the Trainer API will automatically detect all available GPUs and attempt distributed training by default. To explicitly run evaluation on a single GPU, use `CUDA_VISIBLE_DEVICES`:
 
 ```bash
-# Force evaluation to use only GPU 0
-CUDA_VISIBLE_DEVICES=0 python eval.py --checkpoint_path "./outputs/run1"
-
-# Or use GPU 2
-CUDA_VISIBLE_DEVICES=2 python eval.py
-```
-
-**Without setting `CUDA_VISIBLE_DEVICES`**, if your machine has multiple GPUs, the Trainer will initialize distributed training which adds unnecessary overhead for evaluation.
-
-#### Basic Usage
-
-```bash
 # Evaluate on both val and test sets (uses CHECKPOINT_DIR from config.py by default)
 CUDA_VISIBLE_DEVICES=0 python eval.py
-
-# Specify checkpoint path explicitly
-CUDA_VISIBLE_DEVICES=0 python eval.py --checkpoint_path "./outputs/run1"
 
 # Evaluate only validation set
 CUDA_VISIBLE_DEVICES=0 python eval.py --eval_test False
@@ -108,25 +101,22 @@ CUDA_VISIBLE_DEVICES=0 python eval.py --eval_test False
 # Evaluate only test set
 CUDA_VISIBLE_DEVICES=0 python eval.py --eval_val False
 
-# Customize batch size and workers
+# More customized evaluation
 CUDA_VISIBLE_DEVICES=0 python eval.py \
-	--per_device_eval_batch_size 64 \
-	--dataloader_num_workers 8
+	--checkpoint_path "./checkpoints" \
+	--max_event_tokens 50 \
+	--num_queries 100 \
+	--encoder_layers 2 \
+	--decoder_layers 2 \
+	--num_cap_layers 3 \
+	--per_device_eval_batch_size 32 \
+	--ranking_temperature 2.0 \
+	--top_k 20 \
+	--temporal_iou_thresholds 0.3 0.5 0.7 0.9
+	--eval_val False
 ```
 
-#### Evaluation Flags
-
--   **Checkpoint & Output:**
-    -   `--checkpoint_path`: Path to trained model checkpoint (default: `CHECKPOINT_DIR` from `config.py`)
-    -   `--output_dir`: Directory for evaluation outputs (default: `/tmp/eval`)
--   **Data & Metrics:** Same as training (e.g., `--max_event_tokens`, `--stride_ratio`, `--alpha`, `--ranking_temperature`, `--top_k`, `--temporal_iou_thresholds`)
--   **Hardware:**
-    -   `--per_device_eval_batch_size`: Batch size for evaluation (default: 128)
-    -   `--dataloader_num_workers`: Data loading workers (default: 4)
-    -   `--fp16` / `--bf16`: Mixed precision evaluation
--   **Dataset Selection:**
-    -   `--eval_val`: Evaluate on validation set (default: True)
-    -   `--eval_test`: Evaluate on test set (default: True)
+**Without setting `CUDA_VISIBLE_DEVICES`**, if your machine has multiple GPUs, the Trainer will initialize distributed training which adds unnecessary overhead for evaluation.
 
 #### What It Does
 
