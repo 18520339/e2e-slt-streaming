@@ -216,7 +216,9 @@ class PDVCLoss(ImageLoss):
         world_size = 1
         if is_accelerate_available():
             if PartialState._shared_state != {}:
-                num_boxes = reduce(num_boxes)
+                # accelerate.utils.reduce defaults to reduction='mean'. We want the global SUM here
+                # and then explicitly divide by world_size to get the per-process average.
+                num_boxes = reduce(num_boxes, reduction='sum')
                 world_size = PartialState().num_processes
         num_boxes = torch.clamp(num_boxes / world_size, min=1).item()
 
