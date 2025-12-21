@@ -243,7 +243,6 @@ class DeformableDetrForObjectDetectionLoss:
     ):
         super().__init__()
         self.config = config
-        self.weight_dict = weight_dict
         self.auxiliary_outputs = None
         self.criterion = PDVCLoss(
             matcher=DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost), 
@@ -252,6 +251,12 @@ class DeformableDetrForObjectDetectionLoss:
             pad_token_id=pad_token_id,
             losses=['labels', 'boxes', 'cardinality', 'captions']
         )
+        self.base_weight_dict = weight_dict.copy()  # Store original weights
+        self.weight_dict = self.base_weight_dict.copy()
+        
+        if self.config.auxiliary_loss: # Pre-compute the full weight dict including auxiliary losses
+            for layer in range(self.config.decoder_layers - 1):
+                self.weight_dict.update({f'{k}_{layer}': v for k, v in self.base_weight_dict.items()})
         
     @torch.jit.unused
     def _set_aux_loss(self, outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs):
@@ -270,15 +275,13 @@ class DeformableDetrForObjectDetectionLoss:
         if self.config.auxiliary_loss:
             self.auxiliary_outputs = self._set_aux_loss(outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs)
             outputs['auxiliary_outputs'] = self.auxiliary_outputs
-            aux_weight_dict = {}
-            for layer in range(self.config.decoder_layers - 1):
-                aux_weight_dict.update({f'{k}_{layer}': v for k, v in self.weight_dict.items()})
-            self.weight_dict.update(aux_weight_dict) # Weights for each decoder layer
-        
         loss_dict, last_indices = self.criterion(outputs, labels) # Compute the losses, based on outputs and labels
-        if not self.config.with_box_refine: # No loss on class and box if using ground truth proposals
-            for key in ['loss_ce', 'loss_bbox', 'loss_giou', 'loss_counter']: 
-                self.weight_dict[key] = 0 # We only need to pay attention to captioning performance
         
-        loss = sum(loss_dict[k] * self.weight_dict[k] for k in loss_dict if k in self.weight_dict)
+        weight_dict = self.weight_dict # Use a local copy for weight adjustment to avoid mutation
+        if not self.config.with_box_refine: # No loss on class and box if using ground truth proposals
+            weight_dict = self.weight_dict.copy()
+            for key in ['loss_ce', 'loss_bbox', 'loss_giou', 'loss_counter']: 
+                weight_dict[key] = 0 # We only need to pay attention to captioning performance
+        
+        loss = sum(loss_dict[k] * weight_dict[k] for k in loss_dict if k in weight_dict)
         return loss, loss_dict, self.auxiliary_outputs
