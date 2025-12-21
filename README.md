@@ -38,7 +38,7 @@ Multi‑GPU with torchrun (recommended):
 ```bash
 torchrun --nproc_per_node 6 main.py \
 	--output_dir "./checkpoints" \
-	--max_event_tokens 64 \
+	--max_event_tokens 50 \
 	--num_queries 100 \
 	--encoder_layers 2 \
 	--decoder_layers 2 \
@@ -55,10 +55,10 @@ Multi‑GPU with accelerate:
 accelerate launch --num_processes 6 main.py \
 	--output_dir "./checkpoints" \
 	--max_event_tokens 50 \
-	--num_queries 100 \
 	--encoder_layers 2 \
 	--decoder_layers 2 \
 	--num_cap_layers 3 \
+	--num_queries 100 \
 	--num_train_epochs 100 \
 	--per_device_train_batch_size 32 \
 	--weight_decay 1e-4 \
@@ -105,14 +105,14 @@ CUDA_VISIBLE_DEVICES=0 python eval.py --eval_val False
 CUDA_VISIBLE_DEVICES=0 python eval.py \
 	--checkpoint_path "./checkpoints" \
 	--max_event_tokens 50 \
-	--num_queries 100 \
 	--encoder_layers 2 \
 	--decoder_layers 2 \
 	--num_cap_layers 3 \
+	--num_queries 100 \
 	--per_device_eval_batch_size 32 \
 	--ranking_temperature 2.0 \
 	--top_k 20 \
-	--temporal_iou_thresholds 0.3 0.5 0.7 0.9
+	--temporal_iou_thresholds 0.3 0.5 0.7 0.9 \
 	--eval_val False
 ```
 

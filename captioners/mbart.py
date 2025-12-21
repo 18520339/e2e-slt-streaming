@@ -97,7 +97,7 @@ class MBartDecoderCaptioner(nn.Module):
     @torch.no_grad()
     def sample(
         self, decoder_hidden_states, reference_points, transformer_outputs,
-        sample_max: bool = False, temperature: float = 1.0, num_beams: int = 4, 
+        sample_max: bool = True, temperature: float = 1.0, num_beams: int = 1, 
         top_k: Optional[int] = None, top_p: Optional[float] = None,
     ):
         ''' Generate captions using HuggingFace's generate method.
@@ -131,7 +131,9 @@ class MBartDecoderCaptioner(nn.Module):
             max_new_tokens=self.max_event_tokens,
             do_sample=not sample_max,
             temperature=temperature if not sample_max else 1.0,
-            num_beams=num_beams, top_k=top_k, top_p=top_p,
+            num_beams=num_beams if not sample_max else 1, 
+            top_k=top_k if not sample_max else None, 
+            top_p=top_p if not sample_max else None,
             bos_token_id=self.bos_token_id,
             eos_token_id=self.eos_token_id,
             pad_token_id=self.pad_token_id,
