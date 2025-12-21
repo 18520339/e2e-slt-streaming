@@ -1,7 +1,6 @@
 import gc
 import torch
-from functools import partial
-from typing import Optional, Tuple
+from typing import Optional
 from dataclasses import dataclass, field
 
 from transformers import (
@@ -12,7 +11,6 @@ from transformers import (
 from loader import DVCDataset, trainer_collate_fn
 from pdvc import DeformableDetrForObjectDetection
 from captioners import MBartDecoderCaptioner
-from evaluation import preprocess_logits_for_metrics, compute_metrics
 from config import *
 
 def is_bfloat16_supported(): # Checks if the current device supports bfloat16
@@ -56,13 +54,6 @@ class DataArguments:
     max_event_tokens: int = field(default=64, metadata={'help': 'Maximum number of tokens per event/caption'})
     max_window_tokens: int = field(default=256, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
     load_by: str = field(default='window', metadata={'help': 'Load data by "window" or by "video"'})
-
-    # Metrics/Ranking
-    ranking_temperature: float = field(default=2.0, metadata={"help": "Exponent T in caption score normalization by length^T"})
-    alpha: float = field(default=0.3, metadata={"help": "Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score"})
-    top_k: int = field(default=10, metadata={"help": "Keep top k events during evaluation for metrics computation"})
-    temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
-    soda_recursion_limit: int = field(default=0, metadata={"help": "Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations"})
 
 
 @dataclass
@@ -173,39 +164,13 @@ def main():
     )
     trainer.train()
     trainer.save_model(CHECKPOINT_DIR)
-    gc.collect()
-    if torch.cuda.is_available(): torch.cuda.empty_cache()
     
-    eval_trainer = Trainer(
-        model=model,
-        args=training_args,
-        eval_dataset=val_dataset,
-        data_collator=trainer_collate_fn,
-        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
-        compute_metrics=partial(
-            compute_metrics,
-            ranking_temperature=data_args.ranking_temperature,   # Exponent T in caption score normalization by length^T
-            alpha=data_args.alpha,  # Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score
-            top_k=data_args.top_k,
-            temporal_iou_thresholds=data_args.temporal_iou_thresholds,
-            tokenizer=tokenizer,
-            soda_recursion_limit=data_args.soda_recursion_limit, # 0 to disable for faster calculations
-        ),
-    )
-    eval_trainer.evaluate()
+    print(f'\nTraining complete! Model saved to: {CHECKPOINT_DIR}')
+    print(f'To evaluate, run: python eval.py --checkpoint_path {CHECKPOINT_DIR}')
     
-    # Evaluate on test sets
-    test_dataset = DVCDataset(
-        split='test', tokenizer=tokenizer, pose_augment=False, stride_ratio=data_args.stride_ratio, 
-        max_event_tokens=data_args.max_event_tokens, max_window_tokens=data_args.max_window_tokens,
-        min_events=data_args.min_events, load_by=data_args.load_by, seed=training_args.seed
-    )
-    print(f'Test dataset: {len(test_dataset)} samples')
-    eval_trainer.evaluate(eval_dataset=test_dataset, metric_key_prefix='test')
-
     # Cleanup to free memory
     model.to('cpu')
-    del tokenizer, train_dataset, val_dataset, test_dataset, model, training_args, trainer, eval_trainer
+    del tokenizer, train_dataset, val_dataset, model, training_args, trainer
     gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
 
