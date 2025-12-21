@@ -90,14 +90,14 @@ class MBartDecoderCaptioner(nn.Module):
             encoder_attention_mask=encoder_attention_mask, # Attend to all queries
             return_dict=True,
         )
-        seq_log_probs = F.log_softmax(outputs.logits[:, 1:], dim=-1) # (B*Q, L-1, vocab_size)
-        return seq_log_probs.view(batch_size, num_queries, seq_log_probs.size(1), -1) # (B, Q, L-1, vocab_size)
+        seq_log_probs = F.log_softmax(outputs.logits, dim=-1) # (B*Q, L, vocab_size)
+        return seq_log_probs.view(batch_size, num_queries, seq_log_probs.size(1), -1) # (B, Q, L, vocab_size)
 
 
     @torch.no_grad()
     def sample(
         self, decoder_hidden_states, reference_points, transformer_outputs,
-        sample_max: int = 1, temperature: float = 1.0, num_beams: int = 1, 
+        sample_max: bool = False, temperature: float = 1.0, num_beams: int = 4, 
         top_k: Optional[int] = None, top_p: Optional[float] = None,
     ):
         ''' Generate captions using HuggingFace's generate method.
