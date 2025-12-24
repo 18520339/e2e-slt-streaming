@@ -72,7 +72,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.matcher = DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
         
         # Detection heads on top: class + 2D temporal box (center, width)
-        self.count_head = nn.Linear(config.d_model, max_events + 1)  # Predict count of events in [0, num_queries]
+        self.count_head = nn.Linear(config.d_model, max_events + 1)  # Predict count of events in [0, max_events]
         self.class_head = nn.Linear(config.d_model, config.num_labels)       # Num of foreground classes, no 'no-object' here
         self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
         self.caption_head = captioner_class(
@@ -177,7 +177,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             B, Q, _ = layer_hidden_states.shape
             device = layer_hidden_states.device
             
-            # Count head: (B, num_queries, num_queries+1) logits for 0 to num_queries events
+            # Count head: (B, num_queries, max_events + 1) logits for 0 to max_events events
             # Max is to get the most confident prediction across queries
             outputs_count = self.count_head[layer](torch.max(layer_hidden_states, dim=1, keepdim=False).values)
             outputs_counts.append(outputs_count)
@@ -218,10 +218,10 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 
         outputs_classes = torch.stack(outputs_classes)            # (L, B, Q, C)
         outputs_coords  = torch.stack(outputs_coords)             # (L, B, Q, 2)
-        outputs_counts  = torch.stack(outputs_counts)             # (L, B, Q, num_queries + 1)
+        outputs_counts  = torch.stack(outputs_counts)             # (L, B, Q, max_events + 1)
         logits          = outputs_classes[-1]                     # (B, Q, C)
         pred_boxes      = outputs_coords[-1]                      # (B, Q, 2) (center, width) normalized
-        pred_counts     = outputs_counts[-1]                      # (B, num_queries + 1)
+        pred_counts     = outputs_counts[-1]                      # (B, Q, max_events + 1)
         
         loss, loss_dict, auxiliary_outputs = None, None, None
         if labels is not None:
@@ -270,7 +270,7 @@ if __name__ == '__main__':
     # Fetch 1 batch from Data loader
     max_events, max_event_tokens = 10, 12
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX')
     if tokenizer.mask_token is None: tokenizer.add_special_tokens({'mask_token': '[MASK]'})
     
     train_loader = get_loader(split='train', tokenizer=tokenizer, batch_size=4, max_events=max_events, max_event_tokens=max_event_tokens)

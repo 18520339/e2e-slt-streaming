@@ -97,7 +97,7 @@ def main():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # Data Loading
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX')
     train_dataset = DVCDataset(
         split='train', tokenizer=tokenizer, max_tries=data_args.max_tries, noise_rate=data_args.noise_rate, pose_augment=data_args.pose_augment, 
         min_events=data_args.min_events, max_events=data_args.max_events, max_window_tokens=data_args.max_window_tokens, 

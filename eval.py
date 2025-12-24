@@ -84,7 +84,7 @@ def main():
     print(f'Loading checkpoint from: {eval_args.checkpoint_path}')
 
     # Model Setup 
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX')
     config = DeformableDetrConfig(
         d_model=model_args.d_model,
         encoder_layers=model_args.encoder_layers,
@@ -202,7 +202,7 @@ def main():
             ),
         )
         test_metrics = eval_trainer.evaluate(metric_key_prefix='test')
-        print(f'\nTest metrics: {test_metrics}')
+        print('\nTest metrics:', test_metrics)
         
         del test_dataset, eval_trainer
         gc.collect()
@@ -213,7 +213,6 @@ def main():
     del tokenizer, model
     gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
-    print('\nEvaluation complete!')
 
 
 if __name__ == '__main__':

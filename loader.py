@@ -430,7 +430,7 @@ def get_loader(
     
 if __name__ == '__main__':
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained('facebook/mbart-large-cc25', src_lang='en_XX', tgt_lang='en_XX')
     train_loader = get_loader('train', tokenizer=tokenizer, batch_size=4)
     
     for batch in train_loader:

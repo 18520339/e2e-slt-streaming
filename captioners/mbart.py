@@ -49,7 +49,7 @@ class MBartDecoderCaptioner(nn.Module):
             forced_eos_token_id=eos_token_id,
             scale_embedding=True,
         )
-        self.mbart_decoder = MBartForCausalLM.from_pretrained('captioners/trimmed_mbart', config=self.mbart_config, ignore_mismatched_sizes=True)
+        self.mbart_decoder = MBartForCausalLM.from_pretrained('facebook/mbart-large-cc25', config=self.mbart_config, ignore_mismatched_sizes=True)
         
         # Cross-attention projection: project DETR query hidden states to match decoder's expected encoder hidden states
         # MBart expects encoder_hidden_states, so we'll provide decoder_hidden_states as 'encoder' input
