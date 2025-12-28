@@ -1,3 +1,4 @@
+
 import math
 from copy import deepcopy
 from dataclasses import dataclass
@@ -65,14 +66,14 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self, config: DeformableDetrConfig, captioner_class, vocab_size: int, 
         bos_token_id: int, eos_token_id: int, pad_token_id: int, decoder_start_token_id: int = None,
         temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_event_tokens=20, max_events=10,
-        weight_dict={'loss_ce': 1, 'loss_bbox': 5, 'loss_giou': 2, 'loss_counter': 0.5, 'loss_caption': 2}
+        weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2}
     ):
         super().__init__(config)
         self.transformer = DeformableDetrModel(config, temporal_kernel=temporal_kernel) # Deformable DETR encoder-decoder model
         self.matcher = DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
         
         # Detection heads on top: class + 2D temporal box (center, width)
-        self.count_head = nn.Linear(config.d_model, max_events + 1)  # Predict count of events in [0, num_queries]
+        self.count_head = nn.Linear(config.d_model, max_events + 1)  # Predict count of events in [0, max_events]
         self.class_head = nn.Linear(config.d_model, config.num_labels)       # Num of foreground classes, no 'no-object' here
         self.bbox_head = DeformableDetrMLPPredictionHead(input_dim=config.d_model, hidden_dim=config.d_model, output_dim=2, num_layers=3)
         self.caption_head = captioner_class(
@@ -177,7 +178,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             B, Q, _ = layer_hidden_states.shape
             device = layer_hidden_states.device
             
-            # Count head: (B, num_queries, num_queries+1) logits for 0 to num_queries events
+            # Count head: (B, num_queries, max_events + 1) logits for 0 to max_events events
             # Max is to get the most confident prediction across queries
             outputs_count = self.count_head[layer](torch.max(layer_hidden_states, dim=1, keepdim=False).values)
             outputs_counts.append(outputs_count)
@@ -218,10 +219,10 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 
         outputs_classes = torch.stack(outputs_classes)            # (L, B, Q, C)
         outputs_coords  = torch.stack(outputs_coords)             # (L, B, Q, 2)
-        outputs_counts  = torch.stack(outputs_counts)             # (L, B, Q, num_queries + 1)
+        outputs_counts  = torch.stack(outputs_counts)             # (L, B, Q, max_events + 1)
         logits          = outputs_classes[-1]                     # (B, Q, C)
         pred_boxes      = outputs_coords[-1]                      # (B, Q, 2) (center, width) normalized
-        pred_counts     = outputs_counts[-1]                      # (B, num_queries + 1)
+        pred_counts     = outputs_counts[-1]                      # (B, Q, max_events + 1)
         
         loss, loss_dict, auxiliary_outputs = None, None, None
         if labels is not None:

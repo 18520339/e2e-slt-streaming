@@ -202,7 +202,7 @@ def main():
             ),
         )
         test_metrics = eval_trainer.evaluate(metric_key_prefix='test')
-        print(f'\nTest metrics: {test_metrics}')
+        print('\nTest metrics:\n', test_metrics)
         
         del test_dataset, eval_trainer
         gc.collect()
@@ -213,7 +213,6 @@ def main():
     del tokenizer, model
     gc.collect()
     if torch.cuda.is_available(): torch.cuda.empty_cache()
-    print('\nEvaluation complete!')
 
 
 if __name__ == '__main__':
