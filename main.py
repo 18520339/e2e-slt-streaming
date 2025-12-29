@@ -1,4 +1,27 @@
+'''Multi-stage Training for Dense Video Captioning
+
+Stage 1: Train localization (backbone + encoder + decoder + detection heads)
+- Freeze: caption_head
+- Train: backbone (transformer.backbone), encoder, decoder, class_head, bbox_head, count_head
+- Use localization losses only (loss_ce, loss_bbox, loss_giou, loss_counter)
+> python main.py --stage 1 --num_train_epochs 50 --output_dir checkpoints/stage1
+
+Stage 2: Train captioning (load stage 1 checkpoint)
+- Freeze: backbone, encoder, decoder, class_head, bbox_head, count_head 
+- Train: caption_head only
+- Use loss_caption only
+- Optional: Use GT boxes for curriculum caption learning (use_gt_boxes_for_caption=True).
+> python main.py --stage 2 --num_train_epochs 100 --stage1_checkpoint checkpoints/stage1/stage1_final --output_dir checkpoints/stage2
+
+Stage 3: Optional joint fine-tuning (load stage 2 checkpoint)
+- Unfreeze everything
+- Train all parameters (backbone, encoder, decoder, all heads)
+- Use all losses with balanced weights
+- Lower learning rate for stability
+> python main.py --stage 3 --num_train_epochs 30 --stage2_checkpoint checkpoints/stage2/stage2_final --output_dir checkpoints/stage3
+'''
 import gc
+import os
 import torch
 from typing import Optional
 from dataclasses import dataclass, field
@@ -12,6 +35,7 @@ from loader import DVCDataset, trainer_collate_fn
 from pdvc import DeformableDetrForObjectDetection
 from captioners import MBartDecoderCaptioner
 from config import *
+
 
 def is_bfloat16_supported(): # Checks if the current device supports bfloat16
     return torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
@@ -38,9 +62,10 @@ class ModelArguments:
     focal_alpha: float = field(default=0.25)
     with_box_refine: bool = field(default=True, metadata={'help': 'Learnt (True) or Ground truth proposals (False, all losses except caption loss will be disabled)'})
 
-    # Caption head / decoder bits
+    # Caption head parameters
     num_cap_layers: int = field(default=3)
     cap_dropout_rate: float = field(default=0.1)
+    use_gt_boxes_for_caption: bool = field(default=False, metadata={'help': 'Use ground-truth boxes as reference points for caption generation'})
 
 
 @dataclass
@@ -90,12 +115,47 @@ class CustomTrainingArguments(TrainingArguments):
     # greater_is_better: Optional[bool] = field(default=False, metadata={'help': 'Lower loss / Higher Bleu is better'})
     # load_best_model_at_end: bool = field(default=True, metadata={'help': 'Load the best model based on validation loss/Bleu'})
 
+    # Two-stage specific arguments
+    stage: int = field(default=1, metadata={'help': 'Training stage: 1 for localization, 2 for captioning, 3 for joint fine-tuning'})
+    stage1_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to stage 1 checkpoint for stage 2 training'})
+    stage2_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to stage 2 checkpoint for stage 3 fine-tuning'})
+
+
+def freeze_module(module):
+    for param in module.parameters():
+        param.requires_grad = False
+
+def unfreeze_module(module):
+    for param in module.parameters():
+        param.requires_grad = True
+        
+def print_trainable_parameters(model):
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f'Trainable parameters: {trainable/1e6:.2f}M / {total/1e6:.2f}M ({100*trainable/total:.1f}%)')
+    
+def handle_key_mismatches(state_dict, model_state):
+    filtered_state = {}
+    for k, v in state_dict.items():
+        if k in model_state:
+            if model_state[k].shape == v.shape: filtered_state[k] = v
+            else: print(f'=> Skipping {k}: shape mismatch {v.shape} vs {model_state[k].shape}')
+        else: print(f'=> Skipping {k}: not in model')
+    return filtered_state
+    
 
 def main():
-    # Parse CLI args
     parser = HfArgumentParser((ModelArguments, DataArguments, CustomTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
+    
+    # Validate stage requirements
+    if training_args.stage == 1 and model_args.use_gt_boxes_for_caption:
+        raise ValueError('Stage 1 cannot use --use_gt_boxes_for_caption=True since caption head is frozen.')
+    if training_args.stage == 2 and training_args.stage1_checkpoint is None:
+        raise ValueError('Stage 2 requires --stage1_checkpoint to be specified.')
+    if training_args.stage == 3 and training_args.stage2_checkpoint is None:
+        print('Warning: Found no --stage2_checkpoint for stage 3. The model will be trained from scratch.')
+    
     # Data Loading
     tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
     train_dataset = DVCDataset(
@@ -103,16 +163,41 @@ def main():
         min_events=data_args.min_events, max_events=data_args.max_events, max_window_tokens=data_args.max_window_tokens, 
         max_event_tokens=data_args.max_event_tokens, load_by=data_args.load_by, seed=training_args.seed
     )
-    val_dataset = DVCDataset(
-        split='val', tokenizer=tokenizer, pose_augment=False, stride_ratio=data_args.stride_ratio, 
-        min_events=data_args.min_events, max_events=data_args.max_events, max_event_tokens=data_args.max_event_tokens, 
-        max_window_tokens=data_args.max_window_tokens, load_by=data_args.load_by, seed=training_args.seed
-    )
-
-    # Only log sizes on the main process to avoid clutter in DDP
-    if getattr(training_args, 'local_rank', -1) in (-1, 0):
+    # val_dataset = DVCDataset(
+    #     split='val', tokenizer=tokenizer, pose_augment=False, stride_ratio=data_args.stride_ratio, 
+    #     min_events=data_args.min_events, max_events=data_args.max_events, max_event_tokens=data_args.max_event_tokens, 
+    #     max_window_tokens=data_args.max_window_tokens, load_by=data_args.load_by, seed=training_args.seed
+    # )
+    if getattr(training_args, 'local_rank', -1) in (-1, 0): # Only log sizes on the main process to avoid clutter in DDP
+        print(f'\nTraining Stage: {training_args.stage}')
         print(f'Train dataset: {len(train_dataset)} samples')
-        print(f'Val dataset: {len(val_dataset)} samples')
+        # print(f'Val dataset: {len(val_dataset)} samples')
+
+    # Build weight dict based on stage
+    if training_args.stage == 1: # Stage 1: Only localization losses
+        weight_dict = {
+            'loss_ce': model_args.class_cost, 
+            'loss_bbox': model_args.bbox_cost, 
+            'loss_giou': model_args.giou_cost, 
+            'loss_counter': model_args.counter_cost, 
+            'loss_caption': 0  # No caption loss in stage 1
+        }
+    elif training_args.stage == 2: # Stage 2: Only caption loss
+        weight_dict = {
+            'loss_ce': 0, 
+            'loss_bbox': 0, 
+            'loss_giou': 0, 
+            'loss_counter': 0, 
+            'loss_caption': model_args.caption_cost
+        }
+    else: # Stage 3: All losses with balanced weights for joint fine-tuning
+        weight_dict = {
+            'loss_ce': model_args.class_cost, 
+            'loss_bbox': model_args.bbox_cost, 
+            'loss_giou': model_args.giou_cost, 
+            'loss_counter': model_args.counter_cost, 
+            'loss_caption': model_args.caption_cost
+        }
 
     # Model Setup
     config = DeformableDetrConfig(
@@ -146,20 +231,66 @@ def main():
         cap_dropout_rate=model_args.cap_dropout_rate,
         max_event_tokens=data_args.max_event_tokens,
         max_events=data_args.max_events,
-        weight_dict={
-            'loss_ce': model_args.class_cost, 'loss_bbox': model_args.bbox_cost, 'loss_giou': model_args.giou_cost, 
-            'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost
-        }
-    )  # IMPORTANT: Do not .to(device); Trainer handles device placement and DDP
+        weight_dict=weight_dict,
+        use_gt_boxes_for_caption=model_args.use_gt_boxes_for_caption,
+    ) # IMPORTANT: Do not .to(device); Trainer handles device placement and DDP
     
+    # Load stage 1 checkpoint for stage 2
+    if training_args.stage == 2:
+        checkpoint_path = os.path.join(training_args.stage1_checkpoint, 'pytorch_model.bin')
+        if os.path.exists(checkpoint_path):
+            print(f'Loading stage 1 checkpoint from: {checkpoint_path}')
+            state_dict = torch.load(checkpoint_path, map_location='cpu')
+            
+            # Handle potential key mismatches due to with_box_refine difference
+            filtered_state = handle_key_mismatches(state_dict, model.state_dict())
+            model.load_state_dict(filtered_state, strict=False)
+            print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from stage 1')
+        else: raise FileNotFoundError(f'Stage 1 checkpoint not found: {checkpoint_path}')
+    
+    # Load stage 2 checkpoint for stage 3
+    if training_args.stage == 3 and training_args.stage2_checkpoint is not None:
+        checkpoint_path = os.path.join(training_args.stage2_checkpoint, 'pytorch_model.bin')
+        if os.path.exists(checkpoint_path):
+            print(f'Loading stage 2 checkpoint from: {checkpoint_path}')
+            state_dict = torch.load(checkpoint_path, map_location='cpu')
+            
+            # Handle potential key mismatches due to with_box_refine difference
+            filtered_state = handle_key_mismatches(state_dict, model.state_dict())
+            model.load_state_dict(filtered_state, strict=False)
+            print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from stage 2')
+        else: raise FileNotFoundError(f'Stage 2 checkpoint not found: {checkpoint_path}')
+    
+    # Setup freezing based on stage
+    print('\n' + '='*80)
+    if training_args.stage == 1: # Train localization, freeze caption head
+        print('STAGE 1: Training Localization (caption_head frozen)')
+        unfreeze_module(model) # Unfreeze everything first
+        if isinstance(model.caption_head, torch.nn.ModuleList): # Freeze caption heads
+            for head in model.caption_head: freeze_module(head)
+        else: freeze_module(model.caption_head)
+        
+    elif training_args.stage == 2: # Train captioning, freeze localization
+        print('STAGE 2: Training Caption Head (localization frozen)')
+        freeze_module(model) # Freeze everything first
+        if isinstance(model.caption_head, torch.nn.ModuleList): # Unfreeze caption heads
+            for head in model.caption_head: unfreeze_module(head)
+        else: unfreeze_module(model.caption_head)
+    
+    else: # Joint fine-tuning - unfreeze everything
+        print('STAGE 3: Joint Fine-tuning (all parameters trainable)')
+        unfreeze_module(model) # Unfreeze everything
+    print('='*80)
+    
+    if getattr(training_args, 'local_rank', -1) in (-1, 0): 
+        print_trainable_parameters(model)
+    
+    # Move to device
     if training_args._n_gpu <= 1:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model.to(device)
 
-    total_params = sum(p.numel() for p in model.parameters())
-    if getattr(training_args, 'local_rank', -1) in (-1, 0):
-        print(f'Model initialized with {total_params / 1e6:.2f}M parameters')
-
+    # Trainer Setup
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -169,17 +300,27 @@ def main():
         # callbacks=[EarlyStoppingCallback(early_stopping_patience=training_args.early_stopping_patience)],
     )
     trainer.train()
-    trainer.save_model(CHECKPOINT_DIR)
+    
+    # Save final model
+    save_path = os.path.join(training_args.output_dir, f'stage{training_args.stage}_final')
+    trainer.save_model(save_path)
     
     if getattr(training_args, 'local_rank', -1) in (-1, 0):
-        print(f'\nTraining complete! Model saved to: {CHECKPOINT_DIR}')
-        print(f'To evaluate, run: python eval.py --checkpoint_path {CHECKPOINT_DIR}')
+        print(f'\nStage {training_args.stage} training complete!')
+        print(f'Model saved to: {save_path}')
+        
+        if training_args.stage == 1:
+            print(f'To continue with Stage 2, run:')
+            print(f'python main.py --stage 2 --stage1_checkpoint {save_path} --output_dir checkpoints/stage2')
+        elif training_args.stage == 2:
+            print(f'To continue with Stage 3 (optional joint fine-tuning), run:')
+            print(f'python main.py --stage 3 --stage2_checkpoint {save_path} --output_dir checkpoints/stage3 --learning_rate 1e-5 --num_train_epochs 30')
     
     # Cleanup to free memory
     model.to('cpu')
-    del tokenizer, train_dataset, val_dataset, model, training_args, trainer
+    del tokenizer, train_dataset, model, training_args, trainer
     gc.collect()
-    if torch.cuda.is_available(): torch.cuda.empty_cache()
+    if torch.cuda.is_available():  torch.cuda.empty_cache()
 
 
 if __name__ == '__main__':

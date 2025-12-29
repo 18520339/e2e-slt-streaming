@@ -202,7 +202,7 @@ def main():
             ),
         )
         test_metrics = eval_trainer.evaluate(metric_key_prefix='test')
-        print('\nTest metrics:\n', test_metrics)
+        print('\nTest metrics:', test_metrics, sep='\n')
         
         del test_dataset, eval_trainer
         gc.collect()
