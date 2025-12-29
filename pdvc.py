@@ -1,4 +1,3 @@
-
 import math
 from copy import deepcopy
 from dataclasses import dataclass
@@ -66,9 +65,11 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self, config: DeformableDetrConfig, captioner_class, vocab_size: int, 
         bos_token_id: int, eos_token_id: int, pad_token_id: int, decoder_start_token_id: int = None,
         temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_event_tokens=20, max_events=10,
-        weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2}
+        weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2},
+        use_gt_boxes_for_caption: bool = False,  # Use GT boxes as reference points for caption generation
     ):
         super().__init__(config)
+        self.use_gt_boxes_for_caption = use_gt_boxes_for_caption
         self.transformer = DeformableDetrModel(config, temporal_kernel=temporal_kernel) # Deformable DETR encoder-decoder model
         self.matcher = DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
         
@@ -206,14 +207,27 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 max_len = self.caption_head[layer].max_event_tokens
                 aligned_tokens = torch.zeros(B, Q, max_len, dtype=torch.long, device=device)
                 
-                for b, (src_idx, tgt_idx) in enumerate(match_indices):
-                    if src_idx.numel() == 0: continue
-                    src_idx, tgt_idx = src_idx.to(device), tgt_idx.to(device)
-                    tgt_tokens = labels[b]['seq_tokens'][tgt_idx].to(device)  # (M, L_label)
-                    L = min(max_len, tgt_tokens.shape[-1])
-                    aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
+                if self.use_gt_boxes_for_caption: # Provide perfect localization to allow the model to focus purely on language 
+                    aligned_gt_boxes = torch.zeros(B, Q, 2, dtype=reference.dtype, device=device) # Create aligned GT box references for caption head
+                    for b, (src_idx, tgt_idx) in enumerate(match_indices):
+                        if src_idx.numel() == 0: continue
+                        src_idx, tgt_idx = src_idx.to(device), tgt_idx.to(device)
+                        tgt_tokens = labels[b]['seq_tokens'][tgt_idx].to(device)
+                        tgt_boxes = labels[b]['boxes'][tgt_idx].to(dtype=reference.dtype, device=device)  # Match dtype
+                        L = min(max_len, tgt_tokens.shape[-1])
+                        aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
+                        aligned_gt_boxes[b, src_idx] = tgt_boxes  # Use GT boxes
+                    cap_reference = aligned_gt_boxes # Use GT boxes as reference for caption head
+                else:
+                    for b, (src_idx, tgt_idx) in enumerate(match_indices):
+                        if src_idx.numel() == 0: continue
+                        src_idx, tgt_idx = src_idx.to(device), tgt_idx.to(device)
+                        tgt_tokens = labels[b]['seq_tokens'][tgt_idx].to(device)  # (M, L_label)
+                        L = min(max_len, tgt_tokens.shape[-1])
+                        aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
+                    cap_reference = reference # Use predicted/learned reference points
                 
-                cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, reference, transformer_outputs_for_captioner)
+                cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, cap_reference, transformer_outputs_for_captioner)
                 outputs_cap_probs.append(cap_probs)               # (B, Q, Length - 1, vocab_size)
                 outputs_cap_tokens.append(aligned_tokens)         # (B, Q, Length - 1)
                 
