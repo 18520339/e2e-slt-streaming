@@ -176,21 +176,17 @@ class PDVCLoss(ImageLoss):
         '''
         if 'pred_cap_logits' not in outputs: raise KeyError('No caption logits found in outputs')
         idx = self._get_source_permutation_idx(indices)
-        source_logits = outputs['pred_cap_logits'][idx]                 # [batch_size * num_matched, max_len - 1, vocab_size]
+        source_logits = outputs['pred_cap_logits'][idx]          # [batch_size * num_matched, L, vocab_size]
+        
         target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size * num_matched, max_len]
+        if target_tokens.shape[1] > source_logits.shape[1]:      # Remove the start token for targets if it exists
+            target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  
         
-        # Remove the start token for targets if it exists
-        if target_tokens.shape[1] > source_logits.shape[1]: target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  
-        target_masks = (target_tokens != self.pad_token_id).long()      # [batch_size * num_matched, max_len - 1]
-        
-        loss_caption = F.cross_entropy(
-            source_logits.reshape(-1, source_logits.shape[-1]),         # [batch_size * num_matched * (max_len - 1), vocab_size]
-            target_tokens.reshape(-1),                                  # [batch_size * num_matched * (max_len - 1)]
+        loss_caption = F.nll_loss(
+            source_logits.reshape(-1, source_logits.shape[-1]),  # [batch_size * num_matched * L, vocab_size]
+            target_tokens.reshape(-1),                           # [batch_size * num_matched * L]
             ignore_index=self.pad_token_id, 
-            reduction='none'
-        ).view(target_masks.shape)                                      # [batch_size * num_matched, max_len - 1]
-        
-        loss_caption = (loss_caption * target_masks).sum() / target_masks.sum().clamp(min=1)
+        )
         return {'loss_caption': loss_caption}
         
             
