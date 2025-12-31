@@ -27,45 +27,72 @@ python captioners/trim_mbart.py
 
 `main.py` is a single-file training script using `HfArgumentParser` with dataclasses. All key knobs are CLI flags with sensible defaults.
 
-Quick start (CPU or single GPU):
+#### Mode 1: Train localization (backbone + encoder + decoder + detection heads)
 
-```bash
-python main.py --output_dir "./outputs/run1"
-```
-
-Multi‑GPU with torchrun (recommended):
+-   Freeze: caption_head
+-   Train: backbone (transformer.backbone), encoder, decoder, class_head, bbox_head, count_head
+-   Use localization losses only (loss_ce, loss_bbox, loss_giou, loss_counter)
 
 ```bash
 torchrun --nproc_per_node 6 main.py \
-	--output_dir "./checkpoints" \
-	--max_event_tokens 50 \
-	--num_queries 100 \
+	--mode 1 \
+	--output_dir ./checkpoints/mode1 \
+	--max_event_tokens 40 \
+	--d_model 1024 \
 	--encoder_layers 2 \
 	--decoder_layers 2 \
 	--num_cap_layers 3 \
-	--num_train_epochs 100 \
-	--per_device_train_batch_size 32 \
-	--weight_decay 1e-4 \
-	--learning_rate 5e-4
+	--num_queries 30 \
+	--num_train_epochs 50 \
+	--learning_rate 5e-4 \
+	--per_device_train_batch_size 32
 ```
 
-Multi‑GPU with accelerate:
+#### Mode 2: Train captioning (load mode 1 checkpoint)
+
+-   Freeze: backbone, encoder, decoder, class_head, bbox_head, count_head
+-   Train: caption_head only
+-   Use loss_caption only
+-   Use GT boxes for curriculum caption learning (use_gt_boxes_for_caption=True).
 
 ```bash
-accelerate launch --num_processes 6 main.py \
-	--output_dir "./checkpoints" \
-	--max_event_tokens 50 \
+torchrun --nproc_per_node 6 main.py \
+	--mode 2 \
+	--mode1_checkpoint ./checkpoints/mode1/mode1_final \
+	--output_dir ./checkpoints/mode2 \
+	--max_event_tokens 40 \
+	--d_model 1024 \
 	--encoder_layers 2 \
 	--decoder_layers 2 \
 	--num_cap_layers 3 \
-	--num_queries 100 \
+	--num_queries 30 \
 	--num_train_epochs 100 \
-	--per_device_train_batch_size 32 \
-	--weight_decay 1e-4 \
-	--learning_rate 5e-4
+	--learning_rate 5e-4 \
+	--per_device_train_batch_size 32
 ```
 
-What it does:
+#### Mode 3: Joint fine-tuning (Default mode)
+
+-   Unfreeze everything
+-   Train all parameters (backbone, encoder, decoder, all heads)
+-   Use all losses with balanced weights
+-   Can optionally load mode 2 checkpoint
+
+```bash
+torchrun --nproc_per_node 6 main.py \
+  --output_dir ./checkpoints/mode3 \
+  --max_event_tokens 40 \
+  --d_model 1024 \
+  --encoder_layers 2 \
+  --decoder_layers 2 \
+  --num_cap_layers 3 \
+  --num_queries 30 \
+  --num_train_epochs 100 \
+  --learning_rate 5e-4 \
+  --per_device_train_batch_size 32
+```
+
+#### What it does
 
 -   Builds train/val datasets from BOBSL poses and VTTs.
 -   Initializes a Deformable DETR-based model with a captioning head.
@@ -75,7 +102,7 @@ What it does:
 Common training flags (subset shown):
 
 -   Data: `--max_event_tokens 50`, `--stride_ratio 0.9`, `--noise_rate 0.15`, `--pose_augment`
--   Model: `--d_model 1024`, `--num_queries 100`, `--encoder_layers 2`, `--decoder_layers 2`, `--num_cap_layers 3`
+-   Model: `--d_model 1024`, `--num_queries 30`, `--encoder_layers 2`, `--decoder_layers 2`, `--num_cap_layers 3`
 -   Trainer: `--num_train_epochs 100`, `--per_device_train_batch_size 32`, `--output_dir ./checkpoints`, `--learning_rate 5e-4`, `--weight_decay 1e-4`
 
 Tips:
@@ -103,17 +130,16 @@ CUDA_VISIBLE_DEVICES=0 python eval.py --eval_val False
 
 # More customized evaluation
 CUDA_VISIBLE_DEVICES=0 python eval.py \
-	--checkpoint_path "./checkpoints" \
-	--max_event_tokens 50 \
+	--checkpoint_path checkpoints/mode3/mode3_final \
+	--eval_val False \
+	--max_event_tokens 40 \
 	--encoder_layers 2 \
 	--decoder_layers 2 \
 	--num_cap_layers 3 \
-	--num_queries 100 \
+	--num_queries 30 \
 	--per_device_eval_batch_size 32 \
 	--ranking_temperature 2.0 \
-	--top_k 20 \
-	--temporal_iou_thresholds 0.3 0.5 0.7 0.9 \
-	--eval_val False
+	--top_k 20
 ```
 
 **Without setting `CUDA_VISIBLE_DEVICES`**, if your machine has multiple GPUs, the Trainer will initialize distributed training which adds unnecessary overhead for evaluation.
