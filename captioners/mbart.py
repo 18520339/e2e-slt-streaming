@@ -48,65 +48,64 @@ class MBartDecoderCaptioner(nn.Module):
             eos_token_id=eos_token_id,
             forced_eos_token_id=eos_token_id,
             scale_embedding=True,
+            add_cross_attention=True, # Enable cross-attention to attend to visual features
         )
         self.mbart_decoder = MBartForCausalLM.from_pretrained('captioners/trimmed_mbart', config=self.mbart_config, ignore_mismatched_sizes=True)
         
-        # Cross-attention projection: project concatenated visual and query features to match decoder's expected encoder hidden states
-        # We concatenate visual features (from transformer_outputs) with query embeddings for richer representation
-        # Input: 2*D (visual features + query embeddings), Output: D (mBart encoder hidden state dimension)
-        self.visual_query_projection = nn.Linear(config.d_model * 2, config.d_model)
+        # Learnable projection for visual features to preserve temporal dimension
+        # Projects the encoder visual features to match mBart's expected dimension
+        self.visual_projection = nn.Linear(config.d_model, config.d_model)
+        
+        # Learnable query embedding projection
+        # Projects query embeddings to add as context tokens alongside visual features
+        self.query_projection = nn.Linear(config.d_model, config.d_model)
         self.dropout = nn.Dropout(dropout_rate)
         
         
-    def prepare_for_captioning(self, num_queries, reference_points, transformer_outputs):
-        if reference_points.shape[-1] == 2:
-            reference_points = reference_points[:, :, None] * torch.stack([transformer_outputs['valid_ratios']] * 2, -1)[:, None]
-        elif reference_points.shape[-1] == 1:
-            reference_points = reference_points[:, :, None] * transformer_outputs['valid_ratios'][:, None, :, None]
-        return reference_points
-
-
-    def extract_visual_features(self, reference_points, transformer_outputs):
-        ''' Extract visual features from transformer outputs using reference points.
+    def prepare_encoder_hidden_states(self, decoder_hidden_states, transformer_outputs):
+        ''' Prepare encoder hidden states for cross-attention.
         
         Args:
-            reference_points: (B, Q, n_levels, 2) - normalized reference points
+            decoder_hidden_states: (B, Q, D) - query embeddings from DETR decoder
             transformer_outputs: dict containing encoder outputs
             
         Returns:
-            visual_features: (B, Q, D) - aggregated visual features
+            encoder_hidden_states: (B*Q, T+1, D) - visual features + query embedding for each event
+            encoder_attention_mask: (B*Q, T+1) - attention mask
         '''
-        batch_size, num_queries, n_levels, _ = reference_points.shape
+        batch_size, num_queries, _ = decoder_hidden_states.shape
         
         # Get encoder hidden states - this contains the visual features from the backbone
-        encoder_hidden_states = transformer_outputs['encoder_last_hidden_state']  # (B, T, D)
-        temporal_shapes = transformer_outputs['temporal_shapes']  # (n_levels, 1)
-        level_start_index = transformer_outputs['level_start_index']  # (n_levels,)
+        visual_features = transformer_outputs['encoder_last_hidden_state']  # (B, T, D)
+        temporal_len = visual_features.size(1)
         
-        # Extract features at each level based on reference points
-        visual_features_per_level = []
-        for level in range(n_levels):
-            # Get the temporal length for this level
-            temporal_len = temporal_shapes[level].item()
-            start_idx = level_start_index[level].item()
-            
-            # Get encoder features for this level
-            level_features = encoder_hidden_states[:, start_idx:start_idx + temporal_len, :]  # (B, T_level, D)
-            
-            # Get reference points for this level (normalized coordinates)
-            ref_points = reference_points[:, :, level, 0]  # (B, Q) - temporal coordinate
-            
-            # Convert normalized coordinates to indices (0 to temporal_len-1)
-            indices = (ref_points * (temporal_len - 1)).long().clamp(0, temporal_len - 1)  # (B, Q)
-            
-            # Gather features at reference points and expand indices to (B, Q, D) for gathering
-            indices_expanded = indices.unsqueeze(-1).expand(-1, -1, self.config.d_model)  # (B, Q, D)
-            gathered_features = torch.gather(level_features, 1, indices_expanded)  # (B, Q, D)
-            visual_features_per_level.append(gathered_features)
+        # Project visual features through learnable layer
+        projected_visual = self.visual_projection(visual_features)  # (B, T, D)
+        projected_visual = self.dropout(projected_visual)
         
-        # Concatenate features from all levels and average
-        visual_features = torch.stack(visual_features_per_level, dim=2)  # (B, Q, n_levels, D)
-        return visual_features.mean(dim=2)  # (B, Q, D) - average across levels
+        # Project query embeddings through learnable layer
+        projected_queries = self.query_projection(decoder_hidden_states)  # (B, Q, D)
+        projected_queries = self.dropout(projected_queries)
+        
+        # For each query, concatenate its projected embedding with all visual features
+        # This allows each event's decoder to attend to both the full temporal visual sequence and its specific query embedding
+        encoder_hidden_states_list = []
+        for q in range(num_queries):
+            query_emb = projected_queries[:, q:q+1, :]  # (B, 1, D)
+            # Concatenate query embedding with visual features: [query, visual_1, visual_2, ..., visual_T]
+            combined = torch.cat([query_emb, projected_visual], dim=1)  # (B, T+1, D)
+            encoder_hidden_states_list.append(combined)
+        
+        # Stack for all queries and reshape to (B*Q, T+1, D)
+        encoder_hidden_states = torch.stack(encoder_hidden_states_list, dim=1)  # (B, Q, T+1, D)
+        encoder_hidden_states = encoder_hidden_states.view(batch_size * num_queries, temporal_len + 1, -1)  # (B*Q, T+1, D)
+        
+        # Create attention mask (all ones since we want to attend to all tokens)
+        encoder_attention_mask = torch.ones(
+            batch_size * num_queries, temporal_len + 1, 
+            device=decoder_hidden_states.device, dtype=torch.long
+        )  # (B*Q, T+1)
+        return encoder_hidden_states, encoder_attention_mask
     
 
     def forward(self, seq_tokens, decoder_hidden_states, reference_points, transformer_outputs):
@@ -119,25 +118,16 @@ class MBartDecoderCaptioner(nn.Module):
             transformer_outputs: dict - outputs from transformer containing encoder hidden states
             
         Returns:
-            outputs: (B, Q, L-1, vocab_size) - predicted logits for next tokens
+            outputs: (B, Q, L, vocab_size) - predicted logits for next tokens
         '''
         batch_size, num_queries, _ = decoder_hidden_states.shape
         if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, L)
         num_events = batch_size * num_queries
         
-        # Prepare reference points if needed (normalize by valid ratios)
-        reference_points = self.prepare_for_captioning(num_queries, reference_points, transformer_outputs)
-        
-        # Extract visual features using reference points
-        visual_features = self.extract_visual_features(reference_points, transformer_outputs)  # (B, Q, D)
-        
-        # Concatenate visual features with query embeddings for richer representation
-        combined_features = torch.cat([visual_features, decoder_hidden_states], dim=-1)  # (B, Q, 2*D)
-        
-        # Project concatenated features to encoder hidden state dimension
-        encoder_hidden_states = self.visual_query_projection(combined_features)  # (B, Q, D)
-        encoder_hidden_states = encoder_hidden_states.view(num_events, 1, -1)  # (B*Q, 1, D)
-        encoder_attention_mask = torch.ones(num_events, 1, device=decoder_hidden_states.device, dtype=torch.long)  # (B*Q, 1)
+        # Prepare encoder hidden states with visual features and query embeddings
+        encoder_hidden_states, encoder_attention_mask = self.prepare_encoder_hidden_states(
+            decoder_hidden_states, transformer_outputs
+        )  # (B*Q, T+1, D), (B*Q, T+1)
         
         # shift_tokens_right shifts: [token1, token2, ..., EOS] -> [decoder_start, token1, token2, ...]
         input_ids = shift_tokens_right(seq_tokens, self.pad_token_id) # Input tokens: all tokens except the last one (for teacher forcing)
@@ -180,19 +170,10 @@ class MBartDecoderCaptioner(nn.Module):
         batch_size, num_queries, _ = decoder_hidden_states.shape
         num_events = batch_size * num_queries
         
-        # Prepare reference points if needed (normalize by valid ratios)
-        reference_points = self.prepare_for_captioning(num_queries, reference_points, transformer_outputs)
-        
-        # Extract visual features using reference points
-        visual_features = self.extract_visual_features(reference_points, transformer_outputs)  # (B, Q, D)
-        
-        # Concatenate visual features with query embeddings
-        combined_features = torch.cat([visual_features, decoder_hidden_states], dim=-1)  # (B, Q, 2*D)
-        
-        # Project concatenated features to encoder hidden state dimension
-        encoder_hidden_states = self.visual_query_projection(combined_features)  # (B, Q, D)
-        encoder_hidden_states = encoder_hidden_states.view(num_events, 1, -1)  # (B*Q, 1, D)
-        encoder_attention_mask = torch.ones(num_events, 1, device=decoder_hidden_states.device, dtype=torch.long)
+        # Prepare encoder hidden states with visual features and query embeddings
+        encoder_hidden_states, encoder_attention_mask = self.prepare_encoder_hidden_states(
+            decoder_hidden_states, transformer_outputs
+        )  # (B*Q, T+1, D), (B*Q, T+1)
         
         # Generate using HuggingFace's generate method
         generation_outputs = self.mbart_decoder.generate(
