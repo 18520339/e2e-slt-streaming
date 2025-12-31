@@ -1,24 +1,22 @@
-'''Multi-stage Training for Dense Video Captioning
-
-Stage 1: Train localization (backbone + encoder + decoder + detection heads)
+'''
+Mode 1: Train localization (backbone + encoder + decoder + detection heads)
 - Freeze: caption_head
 - Train: backbone (transformer.backbone), encoder, decoder, class_head, bbox_head, count_head
 - Use localization losses only (loss_ce, loss_bbox, loss_giou, loss_counter)
-> python main.py --stage 1 --num_train_epochs 50 --output_dir checkpoints/stage1
+> python main.py --mode 1 --num_train_epochs 50 --output_dir checkpoints/mode1
 
-Stage 2: Train captioning (load stage 1 checkpoint)
+Mode 2: Train captioning (load mode 1 checkpoint)
 - Freeze: backbone, encoder, decoder, class_head, bbox_head, count_head 
 - Train: caption_head only
 - Use loss_caption only
-- Optional: Use GT boxes for curriculum caption learning (use_gt_boxes_for_caption=True).
-> python main.py --stage 2 --num_train_epochs 100 --stage1_checkpoint checkpoints/stage1/stage1_final --output_dir checkpoints/stage2
+- Use GT boxes for curriculum caption learning (use_gt_boxes_for_caption=True).
+> python main.py --mode 2 --num_train_epochs 100 --mode1_checkpoint checkpoints/mode1/mode1_final --output_dir checkpoints/mode2
 
-Stage 3: Optional joint fine-tuning (load stage 2 checkpoint)
+Mode 3: Joint fine-tuning (Optionally load mode 2 checkpoint)
 - Unfreeze everything
 - Train all parameters (backbone, encoder, decoder, all heads)
 - Use all losses with balanced weights
-- Lower learning rate for stability
-> python main.py --stage 3 --num_train_epochs 30 --stage2_checkpoint checkpoints/stage2/stage2_final --output_dir checkpoints/stage3
+> python main.py --mode 3 --num_train_epochs 30 --mode2_checkpoint checkpoints/mode2/mode2_final --output_dir checkpoints/mode3
 '''
 import gc
 import os
@@ -51,7 +49,7 @@ class ModelArguments:
     encoder_n_points: int = field(default=4)
     decoder_n_points: int = field(default=4)
     num_feature_levels: int = field(default=4, metadata={'help': 'The number of input feature levels'})
-    num_queries: int = field(default=100, metadata={'help': 'Maximum number of events a window can have'})
+    num_queries: int = field(default=30, metadata={'help': 'Maximum number of events a window can have'})
     num_labels: int = field(default=1, metadata={'help': 'Single foreground class for caption'})
     auxiliary_loss: bool = field(default=True, metadata={'help': 'The training step may spend a time in per-layer caption alignment and Hungarian matching'})
     class_cost: float = field(default=2, metadata={'help': 'Relative weight of the classification error'})
@@ -65,7 +63,6 @@ class ModelArguments:
     # Caption head parameters
     num_cap_layers: int = field(default=3)
     cap_dropout_rate: float = field(default=0.1)
-    use_gt_boxes_for_caption: bool = field(default=False, metadata={'help': 'Use ground-truth boxes as reference points for caption generation'})
 
 
 @dataclass
@@ -76,14 +73,14 @@ class DataArguments:
     stride_ratio: float = field(default=0.9, metadata={'help': 'Stride ratio for window sampling during validation/testing'})
     min_events: int = field(default=1, metadata={'help': 'Minimum number of events in a window'})
     max_events: int = field(default=10, metadata={'help': 'Maximum number of events in a window'})
-    max_event_tokens: int = field(default=50, metadata={'help': 'Maximum number of tokens per event/caption'})
+    max_event_tokens: int = field(default=40, metadata={'help': 'Maximum number of tokens per event/caption'})
     max_window_tokens: int = field(default=128, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
     load_by: str = field(default='window', metadata={'help': "Load data by 'window' or by 'video'"})
 
 
 @dataclass
 class CustomTrainingArguments(TrainingArguments):
-    output_dir: str = field(default='/tmp', metadata={'help': 'Directory for checkpoints and logs'})
+    output_dir: str = field(default=CHECKPOINT_DIR, metadata={'help': 'Directory for checkpoints and logs'})
     num_train_epochs: float = field(default=100, metadata={'help': 'Total number of training epochs'})
     save_safetensors: bool = field(default=False, metadata={'help': 'Disable safe serialization to avoid the error'})
     
@@ -115,10 +112,10 @@ class CustomTrainingArguments(TrainingArguments):
     # greater_is_better: Optional[bool] = field(default=False, metadata={'help': 'Lower loss / Higher Bleu is better'})
     # load_best_model_at_end: bool = field(default=True, metadata={'help': 'Load the best model based on validation loss/Bleu'})
 
-    # Two-stage specific arguments
-    stage: int = field(default=1, metadata={'help': 'Training stage: 1 for localization, 2 for captioning, 3 for joint fine-tuning'})
-    stage1_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to stage 1 checkpoint for stage 2 training'})
-    stage2_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to stage 2 checkpoint for stage 3 fine-tuning'})
+    # Training mode control
+    mode: int = field(default=3, metadata={'help': 'Training mode: 1 for localization, 2 for captioning, 3 for joint fine-tuning'})
+    mode1_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to mode 1 checkpoint for mode 2 training'})
+    mode2_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to mode 2 checkpoint for mode 3 fine-tuning'})
 
 
 def freeze_module(module):
@@ -148,13 +145,11 @@ def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, CustomTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     
-    # Validate stage requirements
-    if training_args.stage == 1 and model_args.use_gt_boxes_for_caption:
-        raise ValueError('Stage 1 cannot use --use_gt_boxes_for_caption=True since caption head is frozen.')
-    if training_args.stage == 2 and training_args.stage1_checkpoint is None:
-        raise ValueError('Stage 2 requires --stage1_checkpoint to be specified.')
-    if training_args.stage == 3 and training_args.stage2_checkpoint is None:
-        print('Warning: Found no --stage2_checkpoint for stage 3. The model will be trained from scratch.')
+    # Validate mode requirements
+    if training_args.mode == 2 and training_args.mode1_checkpoint is None:
+        raise ValueError('Mode 2 requires --mode1_checkpoint to be specified.')
+    if training_args.mode == 3 and training_args.mode2_checkpoint is None:
+        print('Warning: Found no --mode2_checkpoint for mode 3. The model will be trained from scratch.')
     
     # Data Loading
     tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
@@ -169,20 +164,20 @@ def main():
     #     max_window_tokens=data_args.max_window_tokens, load_by=data_args.load_by, seed=training_args.seed
     # )
     if getattr(training_args, 'local_rank', -1) in (-1, 0): # Only log sizes on the main process to avoid clutter in DDP
-        print(f'\nTraining Stage: {training_args.stage}')
+        print(f'\nTraining Mode: {training_args.mode}')
         print(f'Train dataset: {len(train_dataset)} samples')
         # print(f'Val dataset: {len(val_dataset)} samples')
 
-    # Build weight dict based on stage
-    if training_args.stage == 1: # Stage 1: Only localization losses
+    # Build weight dict based on mode
+    if training_args.mode == 1: # Mode 1: Only localization losses
         weight_dict = {
             'loss_ce': model_args.class_cost, 
             'loss_bbox': model_args.bbox_cost, 
             'loss_giou': model_args.giou_cost, 
             'loss_counter': model_args.counter_cost, 
-            'loss_caption': 0  # No caption loss in stage 1
+            'loss_caption': 0  # No caption loss in mode 1
         }
-    elif training_args.stage == 2: # Stage 2: Only caption loss
+    elif training_args.mode == 2: # Mode 2: Only caption loss
         weight_dict = {
             'loss_ce': 0, 
             'loss_bbox': 0, 
@@ -190,7 +185,7 @@ def main():
             'loss_counter': 0, 
             'loss_caption': model_args.caption_cost
         }
-    else: # Stage 3: All losses with balanced weights for joint fine-tuning
+    else: # Mode 3: All losses with balanced weights for joint fine-tuning
         weight_dict = {
             'loss_ce': model_args.class_cost, 
             'loss_bbox': model_args.bbox_cost, 
@@ -232,53 +227,53 @@ def main():
         max_event_tokens=data_args.max_event_tokens,
         max_events=data_args.max_events,
         weight_dict=weight_dict,
-        use_gt_boxes_for_caption=model_args.use_gt_boxes_for_caption,
+        use_gt_boxes_for_caption=True if training_args.mode == 2 else False, # Use GT boxes for curriculum caption learning in mode 2 only
     ) # IMPORTANT: Do not .to(device); Trainer handles device placement and DDP
     
-    # Load stage 1 checkpoint for stage 2
-    if training_args.stage == 2:
-        checkpoint_path = os.path.join(training_args.stage1_checkpoint, 'pytorch_model.bin')
+    # Load mode 1 checkpoint for mode 2
+    if training_args.mode == 2:
+        checkpoint_path = os.path.join(training_args.mode1_checkpoint, 'pytorch_model.bin')
         if os.path.exists(checkpoint_path):
-            print(f'Loading stage 1 checkpoint from: {checkpoint_path}')
+            print(f'Loading mode 1 checkpoint from: {checkpoint_path}')
             state_dict = torch.load(checkpoint_path, map_location='cpu')
             
             # Handle potential key mismatches due to with_box_refine difference
             filtered_state = handle_key_mismatches(state_dict, model.state_dict())
             model.load_state_dict(filtered_state, strict=False)
-            print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from stage 1')
-        else: raise FileNotFoundError(f'Stage 1 checkpoint not found: {checkpoint_path}')
+            print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from mode 1')
+        else: raise FileNotFoundError(f'Mode 1 checkpoint not found: {checkpoint_path}')
     
-    # Load stage 2 checkpoint for stage 3
-    if training_args.stage == 3 and training_args.stage2_checkpoint is not None:
-        checkpoint_path = os.path.join(training_args.stage2_checkpoint, 'pytorch_model.bin')
+    # Load mode 2 checkpoint for mode 3
+    if training_args.mode == 3 and training_args.mode2_checkpoint is not None:
+        checkpoint_path = os.path.join(training_args.mode2_checkpoint, 'pytorch_model.bin')
         if os.path.exists(checkpoint_path):
-            print(f'Loading stage 2 checkpoint from: {checkpoint_path}')
+            print(f'Loading mode 2 checkpoint from: {checkpoint_path}')
             state_dict = torch.load(checkpoint_path, map_location='cpu')
             
             # Handle potential key mismatches due to with_box_refine difference
             filtered_state = handle_key_mismatches(state_dict, model.state_dict())
             model.load_state_dict(filtered_state, strict=False)
-            print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from stage 2')
-        else: raise FileNotFoundError(f'Stage 2 checkpoint not found: {checkpoint_path}')
+            print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from mode 2')
+        else: raise FileNotFoundError(f'Mode 2 checkpoint not found: {checkpoint_path}')
     
-    # Setup freezing based on stage
+    # Setup freezing based on mode
     print('\n' + '='*80)
-    if training_args.stage == 1: # Train localization, freeze caption head
-        print('STAGE 1: Training Localization (caption_head frozen)')
+    if training_args.mode == 1: # Train localization, freeze caption head
+        print('MODE 1: Training Localization (caption_head frozen)')
         unfreeze_module(model) # Unfreeze everything first
         if isinstance(model.caption_head, torch.nn.ModuleList): # Freeze caption heads
             for head in model.caption_head: freeze_module(head)
         else: freeze_module(model.caption_head)
         
-    elif training_args.stage == 2: # Train captioning, freeze localization
-        print('STAGE 2: Training Caption Head (localization frozen)')
+    elif training_args.mode == 2: # Train captioning, freeze localization
+        print('MODE 2: Training Caption Head (localization frozen)')
         freeze_module(model) # Freeze everything first
         if isinstance(model.caption_head, torch.nn.ModuleList): # Unfreeze caption heads
             for head in model.caption_head: unfreeze_module(head)
         else: unfreeze_module(model.caption_head)
     
     else: # Joint fine-tuning - unfreeze everything
-        print('STAGE 3: Joint Fine-tuning (all parameters trainable)')
+        print('MODE 3: Joint Fine-tuning (all parameters trainable)')
         unfreeze_module(model) # Unfreeze everything
     print('='*80)
     
@@ -302,19 +297,19 @@ def main():
     trainer.train()
     
     # Save final model
-    save_path = os.path.join(training_args.output_dir, f'stage{training_args.stage}_final')
+    save_path = os.path.join(training_args.output_dir, f'mode{training_args.mode}_final')
     trainer.save_model(save_path)
     
     if getattr(training_args, 'local_rank', -1) in (-1, 0):
-        print(f'\nStage {training_args.stage} training complete!')
+        print(f'\nMode {training_args.mode} training complete!')
         print(f'Model saved to: {save_path}')
         
-        if training_args.stage == 1:
-            print(f'To continue with Stage 2, run:')
-            print(f'python main.py --stage 2 --stage1_checkpoint {save_path} --output_dir checkpoints/stage2')
-        elif training_args.stage == 2:
-            print(f'To continue with Stage 3 (optional joint fine-tuning), run:')
-            print(f'python main.py --stage 3 --stage2_checkpoint {save_path} --output_dir checkpoints/stage3 --learning_rate 1e-5 --num_train_epochs 30')
+        if training_args.mode == 1:
+            print(f'To continue with Mode 2, run:')
+            print(f'python main.py --mode 2 --mode1_checkpoint {save_path} --output_dir checkpoints/mode2')
+        elif training_args.mode == 2:
+            print(f'To continue with Mode 3 (optional joint fine-tuning), run:')
+            print(f'python main.py --mode 3 --mode2_checkpoint {save_path} --output_dir checkpoints/mode3 --learning_rate 1e-5 --num_train_epochs 30')
     
     # Cleanup to free memory
     model.to('cpu')

@@ -27,7 +27,7 @@ class ModelArguments:
     encoder_n_points: int = field(default=4)
     decoder_n_points: int = field(default=4)
     num_feature_levels: int = field(default=4, metadata={'help': 'The number of input feature levels'})
-    num_queries: int = field(default=100, metadata={'help': 'Maximum number of events a window can have'})
+    num_queries: int = field(default=30, metadata={'help': 'Maximum number of events a window can have'})
     num_labels: int = field(default=1, metadata={'help': 'Single foreground class for caption'})
     auxiliary_loss: bool = field(default=True, metadata={'help': 'The training step may spend a time in per-layer caption alignment and Hungarian matching'})
     class_cost: float = field(default=2, metadata={'help': 'Relative weight of the classification error'})
@@ -51,7 +51,7 @@ class DataArguments:
     stride_ratio: float = field(default=0.9, metadata={'help': 'Stride ratio for window sampling during validation/testing'})
     min_events: int = field(default=1, metadata={'help': 'Minimum number of events in a window'})
     max_events: int = field(default=10, metadata={'help': 'Maximum number of events in a window'})
-    max_event_tokens: int = field(default=50, metadata={'help': 'Maximum number of tokens per event/caption'})
+    max_event_tokens: int = field(default=40, metadata={'help': 'Maximum number of tokens per event/caption'})
     max_window_tokens: int = field(default=128, metadata={'help': 'Maximum number of tokens in a window for non-streaming input'})
     load_by: str = field(default='window', metadata={'help': "Load data by 'window' or by 'video'"})
 
