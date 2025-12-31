@@ -38,9 +38,6 @@ class MBartDecoderCaptioner(nn.Module):
             num_hidden_layers=num_layers,
             encoder_attention_heads=8,
             decoder_attention_heads=8,
-            # max_position_embeddings=max_event_tokens + 10,  # Add some buffer
-            # attention_dropout=dropout_rate,
-            # activation_dropout=dropout_rate,
             activation_function='relu',
             dropout=dropout_rate,
             bos_token_id=bos_token_id,
@@ -52,61 +49,11 @@ class MBartDecoderCaptioner(nn.Module):
         )
         self.mbart_decoder = MBartForCausalLM.from_pretrained('captioners/trimmed_mbart', config=self.mbart_config, ignore_mismatched_sizes=True)
         
-        # Learnable projection for visual features to preserve temporal dimension
-        # Projects the encoder visual features to match mBart's expected dimension
-        self.visual_projection = nn.Linear(config.d_model, config.d_model)
+        # Query-conditioned modulation of temporal visual memory
+        # This avoids collapsing everything into a single token and keeps encoder_hidden_states as (B*Q, T, D)
+        self.query_to_gamma = nn.Linear(config.d_model, config.d_model)
+        self.query_to_beta = nn.Linear(config.d_model, config.d_model)
         
-        # Learnable query embedding projection
-        # Projects query embeddings to add as context tokens alongside visual features
-        self.query_projection = nn.Linear(config.d_model, config.d_model)
-        self.dropout = nn.Dropout(dropout_rate)
-        
-        
-    def prepare_encoder_hidden_states(self, decoder_hidden_states, transformer_outputs):
-        ''' Prepare encoder hidden states for cross-attention.
-        
-        Args:
-            decoder_hidden_states: (B, Q, D) - query embeddings from DETR decoder
-            transformer_outputs: dict containing encoder outputs
-            
-        Returns:
-            encoder_hidden_states: (B*Q, T+1, D) - visual features + query embedding for each event
-            encoder_attention_mask: (B*Q, T+1) - attention mask
-        '''
-        batch_size, num_queries, _ = decoder_hidden_states.shape
-        
-        # Get encoder hidden states - this contains the visual features from the backbone
-        visual_features = transformer_outputs['encoder_last_hidden_state']  # (B, T, D)
-        temporal_len = visual_features.size(1)
-        
-        # Project visual features through learnable layer
-        projected_visual = self.visual_projection(visual_features)  # (B, T, D)
-        projected_visual = self.dropout(projected_visual)
-        
-        # Project query embeddings through learnable layer
-        projected_queries = self.query_projection(decoder_hidden_states)  # (B, Q, D)
-        projected_queries = self.dropout(projected_queries)
-        
-        # For each query, concatenate its projected embedding with all visual features
-        # This allows each event's decoder to attend to both the full temporal visual sequence and its specific query embedding
-        encoder_hidden_states_list = []
-        for q in range(num_queries):
-            query_emb = projected_queries[:, q:q+1, :]  # (B, 1, D)
-            # Concatenate query embedding with visual features: [query, visual_1, visual_2, ..., visual_T]
-            combined = torch.cat([query_emb, projected_visual], dim=1)  # (B, T+1, D)
-            encoder_hidden_states_list.append(combined)
-        
-        # Stack for all queries and reshape to (B*Q, T+1, D)
-        encoder_hidden_states = torch.stack(encoder_hidden_states_list, dim=1)  # (B, Q, T+1, D)
-        encoder_hidden_states = encoder_hidden_states.view(batch_size * num_queries, temporal_len + 1, -1)  # (B*Q, T+1, D)
-        
-        # Create attention mask (all ones since we want to attend to all tokens)
-        encoder_attention_mask = torch.ones(
-            batch_size * num_queries, temporal_len + 1, 
-            device=decoder_hidden_states.device, dtype=torch.long
-        )  # (B*Q, T+1)
-        return encoder_hidden_states, encoder_attention_mask
-    
 
     def forward(self, seq_tokens, decoder_hidden_states, reference_points, transformer_outputs):
         ''' Forward pass with teacher forcing during training.
@@ -124,10 +71,21 @@ class MBartDecoderCaptioner(nn.Module):
         if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, L)
         num_events = batch_size * num_queries
         
-        # Prepare encoder hidden states with visual features and query embeddings
-        encoder_hidden_states, encoder_attention_mask = self.prepare_encoder_hidden_states(
-            decoder_hidden_states, transformer_outputs
-        )  # (B*Q, T+1, D), (B*Q, T+1)
+        # Full temporal encoder memory from Deformable DETR
+        encoder_memory = transformer_outputs['encoder_last_hidden_state'] # (B, T, D)
+        _, T, D = encoder_memory.shape
+        
+        # Query-conditioned modulation (FiLM-style)
+        # Produces (B, Q, T, D) without expand or repeat
+        gamma = self.query_to_gamma(decoder_hidden_states)  # (B, Q, D)
+        beta = self.query_to_beta(decoder_hidden_states)    # (B, Q, D)
+        gamma = gamma.unsqueeze(2)  # (B, Q, 1, D)
+        beta = beta.unsqueeze(2)    # (B, Q, 1, D)
+        
+        encoder_memory = encoder_memory.unsqueeze(1)  # (B, 1, T, D)
+        encoder_hidden_states = gamma * encoder_memory + beta  # (B, Q, T, D)
+        encoder_hidden_states = encoder_hidden_states.view(batch_size * num_queries, T, D)  # (B*Q, T, D)
+        encoder_attention_mask = torch.ones(batch_size * num_queries, T, device=encoder_hidden_states.device, dtype=torch.long)
         
         # shift_tokens_right shifts: [token1, token2, ..., EOS] -> [decoder_start, token1, token2, ...]
         input_ids = shift_tokens_right(seq_tokens, self.pad_token_id) # Input tokens: all tokens except the last one (for teacher forcing)
@@ -137,8 +95,8 @@ class MBartDecoderCaptioner(nn.Module):
         outputs = self.mbart_decoder(
             input_ids=input_ids, # (B*Q, L)
             attention_mask=attention_mask, # (B*Q, L)
-            encoder_hidden_states=encoder_hidden_states,
-            encoder_attention_mask=encoder_attention_mask, # Attend to all queries
+            encoder_hidden_states=encoder_hidden_states, # (B*Q, T, D)
+            encoder_attention_mask=encoder_attention_mask, # (B*Q, T)
             return_dict=True,
         )
         seq_log_probs = F.log_softmax(outputs.logits, dim=-1) # (B*Q, L, vocab_size)
@@ -167,13 +125,17 @@ class MBartDecoderCaptioner(nn.Module):
             seq_log_probs: (B, Q, L) - log probabilities of generated sequences
             seq_tokens: (B, Q, L) - generated token sequences
         '''
-        batch_size, num_queries, _ = decoder_hidden_states.shape
+        batch_size, num_queries, D = decoder_hidden_states.shape
         num_events = batch_size * num_queries
         
-        # Prepare encoder hidden states with visual features and query embeddings
-        encoder_hidden_states, encoder_attention_mask = self.prepare_encoder_hidden_states(
-            decoder_hidden_states, transformer_outputs
-        )  # (B*Q, T+1, D), (B*Q, T+1)
+        encoder_memory = transformer_outputs['encoder_last_hidden_state']  # (B, T, D)
+        _, T, _ = encoder_memory.shape
+        
+        gamma = self.query_to_gamma(decoder_hidden_states).unsqueeze(2)
+        beta = self.query_to_beta(decoder_hidden_states).unsqueeze(2)
+        encoder_hidden_states = gamma * encoder_memory.unsqueeze(1) + beta
+        encoder_hidden_states = encoder_hidden_states.view(num_events, T, D)
+        encoder_attention_mask = torch.ones(num_events, T, device=encoder_hidden_states.device, dtype=torch.long)
         
         # Generate using HuggingFace's generate method
         generation_outputs = self.mbart_decoder.generate(
