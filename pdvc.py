@@ -225,7 +225,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                         tgt_tokens = labels[b]['seq_tokens'][tgt_idx].to(device)  # (M, L_label)
                         L = min(max_len, tgt_tokens.shape[-1])
                         aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
-                    cap_reference = reference # Use predicted/learned reference points
+                    cap_reference = outputs_coords[-1] # Use predicted/learned reference points
                 
                 cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, cap_reference, transformer_outputs_for_captioner)
                 outputs_cap_probs.append(cap_probs)               # (B, Q, Length - 1, vocab_size)
@@ -251,7 +251,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             )
             
         if not self.training: # Greedy or multinomial sampling for last layer during inference (B, Q, Length - 1)
-            pred_cap_logits, pred_cap_tokens = self.caption_head[-1].sample(layer_hidden_states, reference, transformer_outputs_for_captioner)
+            pred_cap_logits, pred_cap_tokens = self.caption_head[-1].sample(layer_hidden_states, cap_reference, transformer_outputs_for_captioner)
 
         if not return_dict:
             out = (logits, pred_boxes, pred_counts, pred_cap_logits, pred_cap_tokens)

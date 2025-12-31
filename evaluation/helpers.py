@@ -72,8 +72,8 @@ def pairs_for_threshold(
 		matched = False
 		for j, g_span in enumerate(gt_events):
 			if compute_iou(p_span, g_span) >= tiou:
-				preds.append(pred_captions[i])
-				refs.append(gt_captions[j])
+				preds.append(pred_captions[i].lower())
+				refs.append(gt_captions[j].lower())
 				matched = True
     
 		# if not matched:
