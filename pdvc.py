@@ -251,7 +251,9 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             )
             
         if not self.training: # Greedy or multinomial sampling for last layer during inference (B, Q, Length - 1)
-            pred_cap_logits, pred_cap_tokens = self.caption_head[-1].sample(layer_hidden_states, cap_reference, transformer_outputs_for_captioner)
+            # When labels=None (standard inference), cap_reference isn't built in the teacher-forcing branch.
+            # Use the model's predicted temporal boxes as reference points for caption generation.
+            pred_cap_logits, pred_cap_tokens = self.caption_head[-1].sample(layer_hidden_states, pred_boxes, transformer_outputs_for_captioner)
 
         if not return_dict:
             out = (logits, pred_boxes, pred_counts, pred_cap_logits, pred_cap_tokens)
