@@ -136,7 +136,7 @@ class PDVCLoss(ImageLoss):
         )
         target_counters_onehot = torch.zeros_like(pred_counts)
         target_counters_onehot.scatter_(1, target_counters.unsqueeze(-1), 1)
-        loss_counter = F.binary_cross_entropy_with_logits(pred_counts, target_counters_onehot, reduction='none').mean(1).mean()
+        loss_counter = F.binary_cross_entropy_with_logits(pred_counts, target_counters_onehot)
         return {'loss_ce': loss_ce, 'loss_counter': loss_counter}
     
     
