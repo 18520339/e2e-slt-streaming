@@ -129,14 +129,13 @@ class PDVCLoss(ImageLoss):
         ) * source_logits.shape[1]
 
         pred_counts = outputs['pred_counts']
-        max_events = pred_counts.shape[1] - 1
-        target_counters = torch.tensor(
-            [len(target['boxes']) if len(target['boxes']) < max_events else max_events for target in targets], 
+        target_counts = torch.tensor(
+            [min(len(target['boxes']), pred_counts.shape[1] - 1) for target in targets],  # Use min to clip
             device=source_logits.device, dtype=torch.long
         )
-        target_counters_onehot = torch.zeros_like(pred_counts)
-        target_counters_onehot.scatter_(1, target_counters.unsqueeze(-1), 1)
-        loss_counter = F.binary_cross_entropy_with_logits(pred_counts, target_counters_onehot)
+        target_counts_onehot = torch.zeros_like(pred_counts)
+        target_counts_onehot.scatter_(1, target_counts.unsqueeze(-1), 1)
+        loss_counter = F.binary_cross_entropy_with_logits(pred_counts, target_counts_onehot)
         return {'loss_ce': loss_ce, 'loss_counter': loss_counter}
     
     

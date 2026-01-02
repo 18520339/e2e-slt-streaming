@@ -175,7 +175,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             B, Q, _ = layer_hidden_states.shape
             device = layer_hidden_states.device
             
-            # Count head: (B, num_queries, max_events + 1) logits for 0 to max_events events
+            # Count head: (B, max_events + 1) logits for 0 to max_events events
             # Max is to get the most confident prediction across queries
             outputs_count = self.count_head[layer](torch.max(layer_hidden_states, dim=1, keepdim=False).values)
             outputs_counts.append(outputs_count)
@@ -229,10 +229,10 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 
         outputs_classes = torch.stack(outputs_classes)            # (L, B, Q, C)
         outputs_coords  = torch.stack(outputs_coords)             # (L, B, Q, 2)
-        outputs_counts  = torch.stack(outputs_counts)             # (L, B, Q, max_events + 1)
+        outputs_counts  = torch.stack(outputs_counts)             # (L, B, max_events + 1)
         logits          = outputs_classes[-1]                     # (B, Q, C)
         pred_boxes      = outputs_coords[-1]                      # (B, Q, 2) (center, width) normalized
-        pred_counts     = outputs_counts[-1]                      # (B, Q, max_events + 1)
+        pred_counts     = outputs_counts[-1]                      # (B, max_events + 1)
         
         loss, loss_dict, auxiliary_outputs = None, None, None
         if labels is not None:

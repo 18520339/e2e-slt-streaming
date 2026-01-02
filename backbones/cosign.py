@@ -95,8 +95,8 @@ class CoSign1s(nn.Module):
         static = self.linear(x).permute(0, 3, 1, 2) # [B, 64, T, 77]
         cat_feat = self.process_part_features(static) # [B, T, final_dim * parts]
 
-        if self.training:
-            mask_view1, mask_view2 = generate_mask(cat_feat.shape, self.mask_ratio, self.final_dim)
-            view1, view2 = mask_view1.to(cat_feat.device) * cat_feat, mask_view2.to(cat_feat.device) * cat_feat
-            return self.fusion(view1) # [B, T, hidden_size]
+        # if self.training:
+        #     mask_view1, mask_view2 = generate_mask(cat_feat.shape, self.mask_ratio, self.final_dim)
+        #     view1, view2 = mask_view1.to(cat_feat.device) * cat_feat, mask_view2.to(cat_feat.device) * cat_feat
+        #     return self.fusion(view1) # [B, T, hidden_size]
         return self.fusion(cat_feat)  # [B, T, hidden_size]
