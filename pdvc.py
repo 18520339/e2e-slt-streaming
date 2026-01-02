@@ -85,8 +85,9 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         )
         bias_value = -math.log((1 - 0.01) / 0.01)
         self.class_head.bias.data = torch.ones(config.num_labels) * bias_value
-        nn.init.constant_(self.bbox_head.layers[-1].weight.data, 0)
-        nn.init.constant_(self.bbox_head.layers[-1].bias.data, 0)
+        nn.init.xavier_uniform_(self.bbox_head.layers[-1].weight.data, gain=0.01)  # Smaller gain for stability
+        nn.init.constant_(self.bbox_head.layers[-1].bias.data[0], 0.0)  # center bias (will be sigmoided to 0.5)
+        nn.init.constant_(self.bbox_head.layers[-1].bias.data[1], -2.0)  # width bias (will be sigmoided to ~0.12)
 
         # num_pred = (config.decoder_layers + 1) if config.two_stage else config.decoder_layers
         if config.with_box_refine:
@@ -95,11 +96,11 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             self.class_head   = nn.ModuleList([deepcopy(self.class_head)   for _ in range(num_pred)])
             self.bbox_head    = nn.ModuleList([deepcopy(self.bbox_head)    for _ in range(num_pred)])
             self.caption_head = nn.ModuleList([deepcopy(self.caption_head) for _ in range(num_pred)])
-            nn.init.constant_(self.bbox_head[0].layers[-1].bias.data[1:], -2)
+            for i in range(1, num_pred): # For iterative refinement, later layers predict residuals, so keep bias small
+                nn.init.constant_(self.bbox_head[i].layers[-1].bias.data, 0.0)
             self.transformer.decoder.bbox_embed = self.bbox_head # Hack implementation for iterative bounding box refinement
-        else:
+        else: # Without refinement, use same bbox head for all predictions
             num_pred = config.decoder_layers + 1
-            nn.init.constant_(self.bbox_head.layers[-1].bias.data[1:], -2)
             self.count_head   = nn.ModuleList([self.count_head   for _ in range(num_pred)])
             self.class_head   = nn.ModuleList([self.class_head   for _ in range(num_pred)])
             self.bbox_head    = nn.ModuleList([self.bbox_head    for _ in range(num_pred)])
@@ -119,13 +120,8 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[tuple[FloatTensor], DeformableDetrObjectDetectionOutput]:
-        # Ensure targets provide (center,width). If start/end (s<e & min>=0) provided, convert here
-        # if labels is not None: 
-        #     labels: list[dict] = [{
-        #         'class_labels': l['class_labels'], 
-        #         'boxes': ensure_cw_format(l['boxes']),
-        #         'seq_tokens': l['seq_tokens']
-        #     } for l in labels]
+        # if labels is not None: # Ensure targets provide (center,width). If start/end (s<e & min>=0) provided, convert here
+        #     labels: list[dict] = [{**l, 'boxes': ensure_cw_format(l['boxes'])} for l in labels]
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # Send images through DETR base model to obtain encoder + decoder outputs
