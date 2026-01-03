@@ -32,9 +32,9 @@ python captioners/trim_mbart.py
 -   Freeze: encoder, decoder, detection heads, caption head
 -   Train: CoSign backbone + a lightweight text encoder
 -   Contrastive signals:
-    -   **view1 <-> view2**: agreement between 2 masked pose views
-    -   **view <-> text**: alignment between visual window embedding and paragraph text embedding
--   Loss: symmetric KL divergence (no InfoNCE / no explicit negatives)
+    -   **view1 ↔ view2**: agreement between two masked pose views
+    -   **view ↔ text**: alignment between visual window embedding and paragraph text embedding
+-   Loss: InfoNCE with in-batch negatives (ImageBind-style, temperature=0.07)
 
 ```bash
 torchrun --nproc_per_node 6 main.py \

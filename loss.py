@@ -1,10 +1,9 @@
-import numpy as np
-from typing import List, Dict, Tuple
-from scipy.optimize import linear_sum_assignment
-
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
+from typing import List, Dict, Tuple
+from scipy.optimize import linear_sum_assignment
+
 from transformers.loss.loss_for_object_detection import (
     HungarianMatcher, ImageLoss, 
     _set_aux_loss, sigmoid_focal_loss,
@@ -18,49 +17,74 @@ if is_accelerate_available():
     
     
 class ContrastiveLoss(nn.Module):
-    ''' 3-way contrastive loss for visual-language pretraining, inspired by GFSLT-VLP.
+    ''' InfoNCE-based 3-way contrastive loss for visual-language pretraining (ImageBind-style).
     
-    Aligns three modalities using symmetric KL divergence:
-    - view1 <-> view2: Visual self-agreement (masked pose views should produce similar representations)
+    Aligns 3 modalities using InfoNCE with in-batch negatives:
+    - view1 <-> view2: Visual self-agreement (masked pose views should match)
     - view1 <-> text: Cross-modal alignment (visual to text)
     - view2 <-> text: Cross-modal alignment (visual to text)
     
-    All features are mean-pooled to window-level representations [B, D] before alignment.
+    For each anchor modality, we compute similarity to all samples in the batch,
+    treating the same-index sample as positive and all others as negatives.
     '''
-    def __init__(self, temperature=0.1, logit_scale_init=0.07):
+    def __init__(self, temperature=0.1):
         super().__init__()
         self.temperature = temperature
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / logit_scale_init))
     
     
     def _masked_mean_pool(self, feat: Tensor, mask: Tensor = None) -> Tensor: 
-        if mask is not None: # Mean pool over temporal dimension with optional mask. [B, T, D] -> [B, D]
+        # Mean pool over temporal dimension with optional mask. [B, T, D] -> [B, D]
+        if mask is not None:
             mask = mask.float().unsqueeze(-1)  # [B, T, 1]
             return (feat * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
         return feat.mean(dim=1)
+    
+    
+    def _infonce_loss(self, anchor: Tensor, positive: Tensor) -> Tensor:
+        ''' Compute InfoNCE loss between anchor and positive embeddings.
         
+        Args:
+            anchor: [B, D] - anchor embeddings
+            positive: [B, D] - positive embeddings (same index = positive pair)
+            
+        Returns:
+            InfoNCE loss (cross-entropy with in-batch negatives)
+            
+        Formulation from ImageBind paper - https://arxiv.org/pdf/2305.05665:
+            loss = -log[exp(sim[i,i]) / (exp(sim[i,i]) + sum_{j!=i}(exp(sim[i,j])))], which simplifies to:
+            loss = -log[exp(sim[i,i]) / sum_j(exp(sim[i,j]))]  <- sum over ALL j
+                 = -sim[i,i] + log(sum_j(exp(sim[i,j])))
+                 = -log_softmax(sim[i])[i]
+                 = cross_entropy(sim[i], label=i)
+            
+        The denominator includes exp(sim[i,i]) (the positive) + all negatives. For batch_size=4, the similarity matrix is [4, 4]:
+            similarity = [[sim(a0,p0), sim(a0,p1), sim(a0,p2), sim(a0,p3)],  <- anchor[0] vs all
+                          [sim(a1,p0), sim(a1,p1), sim(a1,p2), sim(a1,p3)],  <- anchor[1] vs all
+                          [sim(a2,p0), sim(a2,p1), sim(a2,p2), sim(a2,p3)],  <- anchor[2] vs all
+                          [sim(a3,p0), sim(a3,p1), sim(a3,p2), sim(a3,p3)]]  <- anchor[3] vs all
+            
+            For anchor[0] (label=0):
+            - Numerator: exp(sim[0,0])
+            - Denominator: exp(sim[0,0]) + exp(sim[0,1]) + exp(sim[0,2]) + exp(sim[0,3])
+                           └─positive─┘   └──────────3 negatives──────────┘
+        '''
+        batch_size = anchor.size(0)
         
-    def _kl_contrastive(self, feat1: Tensor, feat2: Tensor) -> Tensor: # Compute KL-based contrastive loss between 2 sets of features
-        # Normalize features to unit length 
-        feat1 = feat1 / feat1.norm(dim=-1, keepdim=True)
-        feat2 = feat2 / feat2.norm(dim=-1, keepdim=True)
+        # Normalize embeddings to unit sphere for cosine similarity
+        anchor = F.normalize(anchor, dim=-1)
+        positive = F.normalize(positive, dim=-1)
         
-        # Compute similarity logits
-        logit_scale = self.logit_scale.exp()
-        logits_feat1 = logit_scale * feat1 @ feat2.t()
-        logits_feat2 = logit_scale * feat2 @ feat1.t()
+        # Compute similarity matrix: [B, B]
+        # sim[i, j] = cosine similarity between anchor[i] and positive[j]
+        similarity = torch.matmul(anchor, positive.T) / self.temperature
         
-        # Ground truths for contrastive loss
-        ground_truths = torch.eye(logits_feat1.shape[0], device=logits_feat1.device, dtype=logits_feat1.dtype, requires_grad=False)
-        gt_probs = F.softmax(ground_truths / self.temperature, dim=1) # Sharpened ground truth
+        # Labels: diagonal indices indicate positive pairs
+        labels = torch.arange(batch_size, device=anchor.device, requires_grad=False)
         
-        # Compute contrastive loss using KL Divergence
-        log_p1 = F.log_softmax(logits_feat1, dim=-1)
-        log_p2 = F.log_softmax(logits_feat2, dim=-1)
-        loss_feat1 = F.kl_div(log_p1, gt_probs, reduction='batchmean')
-        loss_feat2 = F.kl_div(log_p2, gt_probs, reduction='batchmean')
-        return (loss_feat1 + loss_feat2) / 2.0
-
+        # Cross-entropy computes: -log[exp(sim[i,i]) / sum_j(exp(sim[i,j]))]
+        # The denominator includes BOTH the positive (i=i) and all negatives (j!=i)
+        return F.cross_entropy(similarity, labels)
+    
         
     def forward(
         self, 
@@ -69,33 +93,45 @@ class ContrastiveLoss(nn.Module):
         text_emb: Tensor = None,    # [B, D] - text embedding (already pooled)
         visual_mask: Tensor = None, # [B, T] where 1=valid, 0=pad
     ) -> Dict[str, Tensor]:
-        ''' Compute 3-way contrastive loss (or 2-way if text_emb is None).
+        ''' Compute 3-way InfoNCE contrastive loss.
         
         Returns:
             Dictionary with loss components:
-            - loss_v2v: visual-to-visual alignment (view1 <-> view2)
-            - loss_v2t: visual-to-text alignment (avg of view1↔text and view2↔text)
-            - loss_contrastive: total contrastive loss
+            - loss_v1_v2: view1 -> view2
+            - loss_v2_v1: view2 -> view1
+            - loss_v1_txt: view1 -> text (if text provided)
+            - loss_v2_txt: view2 -> text (if text provided)
+            - loss_txt_v1: text -> view1 (if text provided)
+            - loss_txt_v2: text -> view2 (if text provided)
+            - loss_contrastive: average of all pairwise losses
         '''
         # Pool visual features to window-level: [B, T, D] -> [B, D]
         v1_pooled = self._masked_mean_pool(view1, visual_mask)
         v2_pooled = self._masked_mean_pool(view2, visual_mask)
+        losses, loss_terms = {}, []
         
-        # Visual self-agreement: view1 <-> view2
-        loss_v2v = self._kl_contrastive(v1_pooled, v2_pooled)
-        losses = {'loss_v2v': loss_v2v}
-        total_loss = loss_v2v
+        # Visual-to-visual alignment (bidirectional)
+        loss_v1_v2 = self._infonce_loss(v1_pooled, v2_pooled)
+        loss_v2_v1 = self._infonce_loss(v2_pooled, v1_pooled)
+        losses['loss_v1_v2'] = loss_v1_v2
+        losses['loss_v2_v1'] = loss_v2_v1
+        loss_terms.extend([loss_v1_v2, loss_v2_v1])
         
-        # Cross-modal alignment if text is provided
+        # Cross-modal alignment if text is provided (bidirectional for each view)
         if text_emb is not None:
-            loss_v1_text = self._kl_contrastive(v1_pooled, text_emb)
-            loss_v2_text = self._kl_contrastive(v2_pooled, text_emb)
+            loss_v1_txt = self._infonce_loss(v1_pooled, text_emb)
+            loss_v2_txt = self._infonce_loss(v2_pooled, text_emb)
+            loss_txt_v1 = self._infonce_loss(text_emb, v1_pooled)
+            loss_txt_v2 = self._infonce_loss(text_emb, v2_pooled)
             
-            loss_v2t = (loss_v1_text + loss_v2_text) / 2
-            losses['loss_v2t'] = loss_v2t
-            total_loss = total_loss + loss_v2t
+            losses['loss_v1_txt'] = loss_v1_txt
+            losses['loss_v2_txt'] = loss_v2_txt
+            losses['loss_txt_v1'] = loss_txt_v1
+            losses['loss_txt_v2'] = loss_txt_v2
+            loss_terms.extend([loss_v1_txt, loss_v2_txt, loss_txt_v1, loss_txt_v2])
         
-        losses['loss_contrastive'] = total_loss
+        # Total contrastive loss: average of all pairwise losses
+        losses['loss_contrastive'] = sum(loss_terms) / len(loss_terms)
         return losses
 
 
@@ -262,7 +298,7 @@ class PDVCLoss(ImageLoss):
         
         target_tokens = torch.cat([t['seq_tokens'][i] for t, (b, i) in zip(targets, indices)], dim=0)  # [batch_size * num_matched, max_len]
         if target_tokens.shape[1] > source_logits.shape[1]:      # Remove the start token for targets if it exists
-            target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  
+            target_tokens = target_tokens[:, 1:source_logits.shape[1] + 1]  # This is for LSTMCaptioner, not MBartDecoderCaptioner
         
         loss_caption = F.nll_loss(
             source_logits.reshape(-1, source_logits.shape[-1]),  # [batch_size * num_matched * L, vocab_size]
@@ -357,9 +393,8 @@ class DeformableDetrForObjectDetectionLoss:
             outputs['auxiliary_outputs'] = self.auxiliary_outputs
         loss_dict, last_indices = self.criterion(outputs, labels) # Compute the losses, based on outputs and labels
         
-        weight_dict = self.weight_dict # Use a local copy for weight adjustment to avoid mutation
+        weight_dict = self.weight_dict.copy() # Use a local copy for weight adjustment to avoid mutation
         if not self.config.with_box_refine: # No loss on class and box if using ground truth proposals
-            weight_dict = self.weight_dict.copy()
             for key in ['loss_ce', 'loss_bbox', 'loss_giou', 'loss_counter']: 
                 weight_dict[key] = 0 # We only need to pay attention to captioning performance
         

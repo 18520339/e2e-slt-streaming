@@ -1,11 +1,11 @@
 '''
-Mode 1: Visual-Language Contrastive Pre-training (inspired by GFSLT-VLP)
+Mode 1: Visual-Language Contrastive Pre-training (ImageBind-style)
 - Freeze: encoder, decoder, class_head, bbox_head, count_head, caption_head
 - Train: backbone + text encoder with 3-way contrastive loss:
   * view1 <-> view2: Visual self-agreement (masked pose views)
   * view1 <-> text: Cross-modal alignment
   * view2 <-> text: Cross-modal alignment
-- Uses symmetric KL divergence for soft alignment
+- Uses InfoNCE loss with in-batch negatives (temperature=0.07)
 > python main.py --mode 1 --num_train_epochs 50 --output_dir checkpoints/mode1
 
 Mode 2: Joint training (load mode 1 checkpoint, train everything)
