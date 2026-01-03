@@ -204,8 +204,8 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
 
         # Decoder intermediate states: shape (B, L, Q, D) -> we need per-layer lists (D is the d_model)
         hidden_states = transformer_outputs.intermediate_hidden_states if return_dict else transformer_outputs[2]        # (B, L, Q, D)
-        init_reference = transformer_outputs.init_reference_points if return_dict else transformer_outputs[0]            # (B, Q, 2)
-        inter_references = transformer_outputs.intermediate_reference_points if return_dict else transformer_outputs[3]  # (B, L, Q, 2)
+        init_reference = transformer_outputs.init_reference_points if return_dict else transformer_outputs[0]            # (B, Q, 1 or 2)
+        inter_references = transformer_outputs.intermediate_reference_points if return_dict else transformer_outputs[3]  # (B, L, Q, 1 or 2)
 
         # We only refine the center (dim 0) using decoder reference; length is predicted as-is and sigmoided
         outputs_counts, outputs_classes, outputs_coords = [], [], []
@@ -226,7 +226,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             outputs_classes.append(outputs_class)
             
             # Box head: (B, num_queries, 2) (center, width) in [0, 1]
-            reference = init_reference if layer == 0 else inter_references[:, layer - 1]   # (B, Q, 2) if layer != 0, we use previous layer
+            reference = init_reference if layer == 0 else inter_references[:, layer - 1]   # (B, Q, 1 or 2) if layer != 0, we use previous layer
             if self.config.with_box_refine:
                 delta_bbox = self.bbox_head[layer](layer_hidden_states)                    # (B, Q, 2)
                 bbox_reference = inverse_sigmoid(reference)                                # (B, Q, 2) Revert to unnormalized space for box regression

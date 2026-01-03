@@ -76,7 +76,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         
         if config.with_box_refine:
             self.query_position_embeddings = nn.Embedding(config.num_queries, config.d_model * 2)
-            self.reference_points = nn.Linear(config.d_model, 2) # Predict (center, width) in [0,1] for each query via sigmoid
+            self.reference_points = nn.Linear(config.d_model, 1) # Predict center in [0,1] for each query via sigmoid
         else:
             self.pos_trans = nn.Linear(config.d_model, config.d_model * 2)
             self.pos_trans_norm = nn.LayerNorm(config.d_model * 2)
@@ -211,13 +211,13 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             query_pos_embed, target = torch.split(query_pos_embed, num_channels, dim=1)
             query_pos_embed = query_pos_embed.unsqueeze(0).expand(batch_size, -1, -1)  # (B, Q, C)
             target = target.unsqueeze(0).expand(batch_size, -1, -1)                    # (B, Q, C)
-            reference_points = self.reference_points(query_pos_embed).sigmoid()        # (B, Q, 2)
+            reference_points = self.reference_points(query_pos_embed).sigmoid()        # (B, Q, 1)
             init_reference_points = reference_points
         else:
             max_caption_num = max([len(l['boxes']) for l in labels]) if labels is not None else self.config.num_queries
             gt_reference_points = torch.zeros(batch_size, max_caption_num, 2, device=device) # (B, max_N, 2)
             for i in range(batch_size): # Iterate over each window in the batch
-                gt_reference_points[i, :len(labels[i]['boxes'])] = labels[i]['boxes']  # (center, width) in [0,1]
+                gt_reference_points[i, :len(labels[i]['boxes'])] = labels[i]['boxes']  # (center, width) in [0, 1]
                 
             topk_coords_logits = inverse_sigmoid(gt_reference_points)                  # (B, max_N, 2)
             reference_points = gt_reference_points                                     # (B, max_N, 2)
