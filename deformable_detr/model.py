@@ -42,11 +42,12 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
     - Builds multi-scale features as (B, C, 1, T_l)
     - Keeps the same encoder/decoder, temporal_shapes, valid_ratios logic (with height=1)
     '''
-    def __init__(self, config: DeformableDetrConfig, temporal_kernel=5):
+    def __init__(self, config: DeformableDetrConfig, temporal_kernel=5, contrastive_mode=False):
         super().__init__(config)
+        self.contrastive_mode = contrastive_mode
         # Positional encoding: d_model//2 for temporal pos, d_model//2 for duration pos
         self.position_embeddings = PositionEmbeddingSine(config.d_model // 2, normalize=True)
-        self.backbone = CoSign1s(temporal_kernel=temporal_kernel, hidden_size=config.d_model)
+        self.backbone = CoSign1s(temporal_kernel=temporal_kernel, hidden_size=config.d_model, contrastive_mode=contrastive_mode)
 
         # Input projection: map each backbone level to d_model with 1x1 Conv2d
         if config.num_feature_levels > 1:
@@ -120,7 +121,16 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         if output_hidden_states is None: output_hidden_states = self.config.output_hidden_states
         if return_dict is None: return_dict = self.config.use_return_dict
         
-        pixel_values = self.backbone(pixel_values).permute(0, 2, 1) # [B, d_model, T]
+        # Handle contrastive mode where backbone returns two views
+        backbone_out = self.backbone(pixel_values)
+        if self.training and self.contrastive_mode:
+            view1, view2 = backbone_out  # Both [B, T, hidden_size]
+            pixel_values = view1.permute(0, 2, 1)  # [B, d_model, T] - use view1 for main forward
+            self._contrastive_views = (view1, view2)  # Store for loss computation
+        else:
+            pixel_values = backbone_out.permute(0, 2, 1)  # [B, d_model, T]
+            self._contrastive_views = None
+            
         B, C, T = pixel_values.shape
         device = pixel_values.device
         if pixel_mask is None: pixel_mask = torch.ones((B, T), dtype=torch.long, device=device)
@@ -168,9 +178,9 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)  # (B, \sum{T_l}, C)
 
         # 1D temporal shapes and start indices
-        temporal_shapes = torch.as_tensor(temporal_shapes, dtype=torch.long, device=source_flatten.device)  # (L,)
-        level_start_index = torch.cat([temporal_shapes.new_zeros((1,)), temporal_shapes.cumsum(0)[:-1]])     # (L,)
-        valid_ratios = torch.stack([torch.sum(m, 1).to(source_flatten.dtype) / m.shape[1] for m in masks], 1)    # (B, L) 
+        temporal_shapes = torch.as_tensor(temporal_shapes, dtype=torch.long, device=source_flatten.device)     # (L,)
+        level_start_index = torch.cat([temporal_shapes.new_zeros((1,)), temporal_shapes.cumsum(0)[:-1]])       # (L,)
+        valid_ratios = torch.stack([torch.sum(m, 1).to(source_flatten.dtype) / m.shape[1] for m in masks], 1)  # (B, L) 
 
         # Send source_flatten + mask_flatten + lvl_pos_embed_flatten (backbone + proj layer output) through encoder
         # Also provide temporal_shapes, level_start_index and valid_ratios

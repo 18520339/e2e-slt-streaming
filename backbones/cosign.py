@@ -38,11 +38,12 @@ def generate_mask(shape, ratio, dim):
 
 
 class CoSign1s(nn.Module):
-    def __init__(self, temporal_kernel, hidden_size, level='spatial', adaptive=True, mask_ratio=0.3):
+    def __init__(self, temporal_kernel, hidden_size, level='spatial', adaptive=True, mask_ratio=0.3, contrastive_mode=False):
         super().__init__()
         self.graph, A = {}, {}
         self.gcn_modules = {}
         self.mask_ratio = mask_ratio # Portion of keypoint groups to mask
+        self.contrastive_mode = contrastive_mode # Enable contrastive learning with 2 views
         self.linear = nn.Sequential(
             # elementwise_affine=False makes this LayerNorm a pure normalization step 
             # (zero-mean, unit-variance per sample over [x, y, conf]) with no learned scale/bias:
@@ -95,8 +96,10 @@ class CoSign1s(nn.Module):
         static = self.linear(x).permute(0, 3, 1, 2) # [B, 64, T, 77]
         cat_feat = self.process_part_features(static) # [B, T, final_dim * parts]
 
-        # if self.training:
-        #     mask_view1, mask_view2 = generate_mask(cat_feat.shape, self.mask_ratio, self.final_dim)
-        #     view1, view2 = mask_view1.to(cat_feat.device) * cat_feat, mask_view2.to(cat_feat.device) * cat_feat
-        #     return self.fusion(view1) # [B, T, hidden_size]
+        if self.training and self.contrastive_mode:
+            mask_view1, mask_view2 = generate_mask(cat_feat.shape, self.mask_ratio, self.final_dim)
+            view1 = mask_view1.to(cat_feat.device) * cat_feat
+            view2 = mask_view2.to(cat_feat.device) * cat_feat
+            # Return both views for contrastive learning: (view1, view2)
+            return self.fusion(view1), self.fusion(view2)  # Both [B, T, hidden_size]
         return self.fusion(cat_feat)  # [B, T, hidden_size]

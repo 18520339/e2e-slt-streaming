@@ -167,7 +167,7 @@ def main():
             ),
         )
         val_metrics = eval_trainer.evaluate(metric_key_prefix='val')
-        print(f'\nValidation metrics: {val_metrics}')
+        print('\nValidation metrics:', val_metrics, sep='\n')
         
         del val_dataset, eval_trainer
         gc.collect()

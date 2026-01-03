@@ -1,9 +1,10 @@
-import torch
-import torch.nn.functional as F
-from torch import nn, Tensor
+import numpy as np
 from typing import List, Dict, Tuple
 from scipy.optimize import linear_sum_assignment
 
+import torch
+import torch.nn.functional as F
+from torch import nn, Tensor
 from transformers.loss.loss_for_object_detection import (
     HungarianMatcher, ImageLoss, 
     _set_aux_loss, sigmoid_focal_loss,
@@ -16,6 +17,88 @@ if is_accelerate_available():
     from accelerate.utils import reduce
     
     
+class ContrastiveLoss(nn.Module):
+    ''' 3-way contrastive loss for visual-language pretraining, inspired by GFSLT-VLP.
+    
+    Aligns three modalities using symmetric KL divergence:
+    - view1 <-> view2: Visual self-agreement (masked pose views should produce similar representations)
+    - view1 <-> text: Cross-modal alignment (visual to text)
+    - view2 <-> text: Cross-modal alignment (visual to text)
+    
+    All features are mean-pooled to window-level representations [B, D] before alignment.
+    '''
+    def __init__(self, temperature=0.1, logit_scale_init=0.07):
+        super().__init__()
+        self.temperature = temperature
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / logit_scale_init))
+    
+    
+    def _masked_mean_pool(self, feat: Tensor, mask: Tensor = None) -> Tensor: 
+        if mask is not None: # Mean pool over temporal dimension with optional mask. [B, T, D] -> [B, D]
+            mask = mask.float().unsqueeze(-1)  # [B, T, 1]
+            return (feat * mask).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
+        return feat.mean(dim=1)
+        
+        
+    def _kl_contrastive(self, feat1: Tensor, feat2: Tensor) -> Tensor: # Compute KL-based contrastive loss between 2 sets of features
+        # Normalize features to unit length 
+        feat1 = feat1 / feat1.norm(dim=-1, keepdim=True)
+        feat2 = feat2 / feat2.norm(dim=-1, keepdim=True)
+        
+        # Compute similarity logits
+        logit_scale = self.logit_scale.exp()
+        logits_feat1 = logit_scale * feat1 @ feat2.t()
+        logits_feat2 = logit_scale * feat2 @ feat1.t()
+        
+        # Ground truths for contrastive loss
+        ground_truths = torch.eye(logits_feat1.shape[0], device=logits_feat1.device, dtype=logits_feat1.dtype, requires_grad=False)
+        gt_probs = F.softmax(ground_truths / self.temperature, dim=1) # Sharpened ground truth
+        
+        # Compute contrastive loss using KL Divergence
+        log_p1 = F.log_softmax(logits_feat1, dim=-1)
+        log_p2 = F.log_softmax(logits_feat2, dim=-1)
+        loss_feat1 = F.kl_div(log_p1, gt_probs, reduction='batchmean')
+        loss_feat2 = F.kl_div(log_p2, gt_probs, reduction='batchmean')
+        return (loss_feat1 + loss_feat2) / 2.0
+
+        
+    def forward(
+        self, 
+        view1: Tensor,              # [B, T, D] - first masked pose view
+        view2: Tensor,              # [B, T, D] - second masked pose view
+        text_emb: Tensor = None,    # [B, D] - text embedding (already pooled)
+        visual_mask: Tensor = None, # [B, T] where 1=valid, 0=pad
+    ) -> Dict[str, Tensor]:
+        ''' Compute 3-way contrastive loss (or 2-way if text_emb is None).
+        
+        Returns:
+            Dictionary with loss components:
+            - loss_v2v: visual-to-visual alignment (view1 <-> view2)
+            - loss_v2t: visual-to-text alignment (avg of view1↔text and view2↔text)
+            - loss_contrastive: total contrastive loss
+        '''
+        # Pool visual features to window-level: [B, T, D] -> [B, D]
+        v1_pooled = self._masked_mean_pool(view1, visual_mask)
+        v2_pooled = self._masked_mean_pool(view2, visual_mask)
+        
+        # Visual self-agreement: view1 <-> view2
+        loss_v2v = self._kl_contrastive(v1_pooled, v2_pooled)
+        losses = {'loss_v2v': loss_v2v}
+        total_loss = loss_v2v
+        
+        # Cross-modal alignment if text is provided
+        if text_emb is not None:
+            loss_v1_text = self._kl_contrastive(v1_pooled, text_emb)
+            loss_v2_text = self._kl_contrastive(v2_pooled, text_emb)
+            
+            loss_v2t = (loss_v1_text + loss_v2_text) / 2
+            losses['loss_v2t'] = loss_v2t
+            total_loss = total_loss + loss_v2t
+        
+        losses['loss_contrastive'] = total_loss
+        return losses
+
+
 class DeformableDetrHungarianMatcher(HungarianMatcher):
     '''
     This class computes an assignment between the targets and the predictions of the network. 

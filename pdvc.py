@@ -14,7 +14,7 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
 )
 from deformable_detr import DeformableDetrModel
 from captioners import LSTMCaptioner, MBartDecoderCaptioner
-from loss import DeformableDetrHungarianMatcher, DeformableDetrForObjectDetectionLoss
+from loss import DeformableDetrHungarianMatcher, DeformableDetrForObjectDetectionLoss, ContrastiveLoss
 from utils import ensure_cw_format
 
 
@@ -67,10 +67,12 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         temporal_kernel=5, num_cap_layers=1, cap_dropout_rate=0.1, max_event_tokens=20, max_events=10,
         weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2},
         use_gt_boxes_for_caption: bool = False,  # Use GT boxes as reference points for caption generation
+        contrastive_mode: bool = False,  # Enable contrastive learning for backbone pretraining
     ):
         super().__init__(config)
         self.use_gt_boxes_for_caption = use_gt_boxes_for_caption
-        self.transformer = DeformableDetrModel(config, temporal_kernel=temporal_kernel) # Deformable DETR encoder-decoder model
+        self.contrastive_mode = contrastive_mode
+        self.transformer = DeformableDetrModel(config, temporal_kernel=temporal_kernel, contrastive_mode=contrastive_mode)
         self.matcher = DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
         
         # Detection heads on top: class + 2D temporal box (center, width)
@@ -108,7 +110,46 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
             self.transformer.decoder.bbox_embed = None
             
         self.loss_function = DeformableDetrForObjectDetectionLoss(config, pad_token_id=pad_token_id, weight_dict=weight_dict)
+        self.contrastive_loss = ContrastiveLoss() if contrastive_mode else None
+        
+        # Text encoder for contrastive learning (simple embedding + projection)
+        if contrastive_mode:
+            self.text_embed = nn.Embedding(vocab_size, config.d_model, padding_idx=pad_token_id)
+            self.text_proj = nn.Sequential(
+                nn.LayerNorm(config.d_model),
+                nn.Linear(config.d_model, config.d_model),
+                nn.GELU(),
+            )
+            self.pad_token_id = pad_token_id
+        else:
+            self.text_embed = None
+            self.text_proj = None
         self.post_init()
+
+
+    def _encode_text(self, labels: list[dict]) -> FloatTensor:
+        ''' Encode paragraph tokens from labels for contrastive learning.
+        
+        Args:
+            labels: List of dicts, each containing 'paragraph_tokens' [L] or 'masked_paragraph_tokens' [L]
+            
+        Returns:
+            text_emb: [B, D] - mean-pooled text embeddings
+        '''
+        # Stack paragraph tokens from all samples in batch, using masked_paragraph_tokens for contrastive learning (has noise injection)
+        paragraph_tokens = torch.stack([label.get('masked_paragraph_tokens', label.get('paragraph_tokens')) for label in labels])  # [B, L]
+        device = next(self.parameters()).device
+        paragraph_tokens = paragraph_tokens.to(device)
+        
+        # Create attention mask (1 for valid tokens, 0 for padding)
+        text_mask = (paragraph_tokens != self.pad_token_id).float()  # [B, L]
+        
+        # Embed and project tokens
+        text_embedded = self.text_embed(paragraph_tokens)  # [B, L, D]
+        text_embedded = self.text_proj(text_embedded)      # [B, L, D]
+        
+        # Mean pool over valid tokens
+        return (text_embedded * text_mask.unsqueeze(-1)).sum(dim=1) / (text_mask.sum(dim=1, keepdim=True) + 1e-8)  # [B, D]
 
 
     def forward(
@@ -245,6 +286,19 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 labels, logits, pred_boxes, pred_counts, pred_cap_logits,
                 outputs_classes, outputs_coords, outputs_counts, outputs_cap_probs
             )
+            
+            # Add contrastive loss if in contrastive mode
+            if self.contrastive_mode and self.contrastive_loss is not None:
+                contrastive_views = getattr(self.transformer, '_contrastive_views', None)
+                if contrastive_views is not None:
+                    view1, view2 = contrastive_views
+                    text_emb = None # Encode text for 3-way contrastive learning
+                    if self.text_embed is not None and self.text_proj is not None:
+                        text_emb = self._encode_text(labels)
+                    
+                    contrastive_loss_dict = self.contrastive_loss(view1, view2, text_emb=text_emb, visual_mask=pixel_mask)
+                    loss_dict.update(contrastive_loss_dict)
+                    loss = loss + contrastive_loss_dict['loss_contrastive']
             
         if not self.training: # Greedy or multinomial sampling for last layer during inference (B, Q, Length - 1)
             # When labels=None (standard inference), cap_reference isn't built in the teacher-forcing branch.

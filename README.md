@@ -27,11 +27,14 @@ python captioners/trim_mbart.py
 
 `main.py` is a single-file training script using `HfArgumentParser` with dataclasses. All key knobs are CLI flags with sensible defaults.
 
-#### Mode 1: Train localization (backbone + encoder + decoder + detection heads)
+#### Mode 1: Visual-Language Contrastive Pre-training (view1, view2, text)
 
--   Freeze: caption_head
--   Train: backbone (transformer.backbone), encoder, decoder, class_head, bbox_head, count_head
--   Use localization losses only (loss_ce, loss_bbox, loss_giou, loss_counter)
+-   Freeze: encoder, decoder, detection heads, caption head
+-   Train: CoSign backbone + a lightweight text encoder
+-   Contrastive signals:
+    -   **view1 <-> view2**: agreement between 2 masked pose views
+    -   **view <-> text**: alignment between visual window embedding and paragraph text embedding
+-   Loss: symmetric KL divergence (no InfoNCE / no explicit negatives)
 
 ```bash
 torchrun --nproc_per_node 6 main.py \
@@ -48,12 +51,11 @@ torchrun --nproc_per_node 6 main.py \
 	--per_device_train_batch_size 32
 ```
 
-#### Mode 2: Train captioning (load mode 1 checkpoint)
+#### Mode 2: Joint Training (load mode 1 checkpoint, train everything)
 
--   Freeze: backbone, encoder, decoder, class_head, bbox_head, count_head
--   Train: caption_head only
--   Use loss_caption only
--   Use GT boxes for curriculum caption learning (use_gt_boxes_for_caption=True).
+-   Unfreeze everything
+-   Train: backbone, encoder/decoder, detection heads, caption head
+-   Losses: localization + captioning (as configured by `--*_cost` flags)
 
 ```bash
 torchrun --nproc_per_node 6 main.py \
@@ -71,32 +73,11 @@ torchrun --nproc_per_node 6 main.py \
 	--per_device_train_batch_size 32
 ```
 
-#### Mode 3: Joint fine-tuning (Default mode)
-
--   Unfreeze everything
--   Train all parameters (backbone, encoder, decoder, all heads)
--   Use all losses with balanced weights
--   Can optionally load mode 2 checkpoint
-
-```bash
-torchrun --nproc_per_node 6 main.py \
-  --output_dir ./checkpoints/mode3 \
-  --max_event_tokens 40 \
-  --d_model 1024 \
-  --encoder_layers 2 \
-  --decoder_layers 2 \
-  --num_cap_layers 3 \
-  --num_queries 30 \
-  --num_train_epochs 100 \
-  --learning_rate 5e-4 \
-  --per_device_train_batch_size 32
-```
-
 #### What it does
 
 -   Builds train/val datasets from BOBSL poses and VTTs.
 -   Initializes a Deformable DETR-based model with a captioning head.
--   Trains with Hugging Face Trainer and saves the final model to the `CHECKPOINT_DIR` defined in `config.py`.
+-   Trains with Hugging Face Trainer and saves the final model to `<output_dir>/mode{1|2}_final`.
 -   **Note:** Training no longer includes evaluation. After training completes, use `eval.py` to evaluate the model (see below).
 
 Common training flags (subset shown):
@@ -108,7 +89,7 @@ Common training flags (subset shown):
 Tips:
 
 -   To change window length or FPS, edit `config.py`. To change caption length, pass `--max_event_tokens`.
--   Trainer logs/checkpoints go to `--output_dir` (default `/tmp`). The final model is also saved to `CHECKPOINT_DIR` from `config.py`.
+-   Trainer logs/checkpoints go to `--output_dir` (default `/tmp`). The final model is saved to `<output_dir>/mode{1|2}_final`.
 
 ### 4. Evaluate (Single GPU Only)
 
@@ -130,7 +111,7 @@ CUDA_VISIBLE_DEVICES=0 python eval.py --eval_val False
 
 # More customized evaluation
 CUDA_VISIBLE_DEVICES=0 python eval.py \
-	--checkpoint_path checkpoints/mode3/mode3_final \
+	--checkpoint_path checkpoints/mode2/mode2_final \
 	--eval_val False \
 	--max_event_tokens 40 \
 	--encoder_layers 2 \

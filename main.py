@@ -1,22 +1,18 @@
 '''
-Mode 1: Train localization (backbone + encoder + decoder + detection heads)
-- Freeze: caption_head
-- Train: backbone (transformer.backbone), encoder, decoder, class_head, bbox_head, count_head
-- Use localization losses only (loss_ce, loss_bbox, loss_giou, loss_counter)
+Mode 1: Visual-Language Contrastive Pre-training (inspired by GFSLT-VLP)
+- Freeze: encoder, decoder, class_head, bbox_head, count_head, caption_head
+- Train: backbone + text encoder with 3-way contrastive loss:
+  * view1 <-> view2: Visual self-agreement (masked pose views)
+  * view1 <-> text: Cross-modal alignment
+  * view2 <-> text: Cross-modal alignment
+- Uses symmetric KL divergence for soft alignment
 > python main.py --mode 1 --num_train_epochs 50 --output_dir checkpoints/mode1
 
-Mode 2: Train captioning (load mode 1 checkpoint)
-- Freeze: backbone, encoder, decoder, class_head, bbox_head, count_head 
-- Train: caption_head only
-- Use loss_caption only
-- Use GT boxes for curriculum caption learning (use_gt_boxes_for_caption=True).
+Mode 2: Joint training (load mode 1 checkpoint, train everything)
+- Unfreeze everything (backbone, encoder, decoder, all heads)
+- Train all parameters with all losses (localization + captioning)
+- Uses the contrastive pre-trained backbone and text embeddings
 > python main.py --mode 2 --num_train_epochs 100 --mode1_checkpoint checkpoints/mode1/mode1_final --output_dir checkpoints/mode2
-
-Mode 3: Joint fine-tuning (Optionally load mode 2 checkpoint)
-- Unfreeze everything
-- Train all parameters (backbone, encoder, decoder, all heads)
-- Use all losses with balanced weights
-> python main.py --mode 3 --num_train_epochs 30 --mode2_checkpoint checkpoints/mode2/mode2_final --output_dir checkpoints/mode3
 '''
 import gc
 import os
@@ -113,9 +109,8 @@ class CustomTrainingArguments(TrainingArguments):
     # load_best_model_at_end: bool = field(default=True, metadata={'help': 'Load the best model based on validation loss/Bleu'})
 
     # Training mode control
-    mode: int = field(default=3, metadata={'help': 'Training mode: 1 for localization, 2 for captioning, 3 for joint fine-tuning'})
+    mode: int = field(default=2, metadata={'help': 'Training mode: 1 for contrastive pre-training, 2 for joint training'})
     mode1_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to mode 1 checkpoint for mode 2 training'})
-    mode2_checkpoint: Optional[str] = field(default=None, metadata={'help': 'Path to mode 2 checkpoint for mode 3 fine-tuning'})
 
 
 def freeze_module(module):
@@ -145,11 +140,8 @@ def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, CustomTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     
-    # Validate mode requirements
     if training_args.mode == 2 and training_args.mode1_checkpoint is None:
-        raise ValueError('Mode 2 requires --mode1_checkpoint to be specified.')
-    if training_args.mode == 3 and training_args.mode2_checkpoint is None:
-        print('Warning: Found no --mode2_checkpoint for mode 3. The model will be trained from scratch.')
+        print('Warning: Found no --mode1_checkpoint for mode 2. The model will be trained from scratch.')
     
     # Data Loading
     tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
@@ -169,23 +161,16 @@ def main():
         # print(f'Val dataset: {len(val_dataset)} samples')
 
     # Build weight dict based on mode
-    if training_args.mode == 1: # Mode 1: Only localization losses
-        weight_dict = {
-            'loss_ce': model_args.class_cost, 
-            'loss_bbox': model_args.bbox_cost, 
-            'loss_giou': model_args.giou_cost, 
-            'loss_counter': model_args.counter_cost, 
-            'loss_caption': 0  # No caption loss in mode 1
-        }
-    elif training_args.mode == 2: # Mode 2: Only caption loss
+    if training_args.mode == 1: # Mode 1: Only contrastive loss (other losses zeroed)
         weight_dict = {
             'loss_ce': 0, 
             'loss_bbox': 0, 
             'loss_giou': 0, 
             'loss_counter': 0, 
-            'loss_caption': model_args.caption_cost
+            'loss_caption': 0,  # Only contrastive loss matters
         }
-    else: # Mode 3: All losses with balanced weights for joint fine-tuning
+        contrastive_mode = True
+    else: # Mode 2: All losses with balanced weights for joint training
         weight_dict = {
             'loss_ce': model_args.class_cost, 
             'loss_bbox': model_args.bbox_cost, 
@@ -193,6 +178,7 @@ def main():
             'loss_counter': model_args.counter_cost, 
             'loss_caption': model_args.caption_cost
         }
+        contrastive_mode = False
 
     # Model Setup
     config = DeformableDetrConfig(
@@ -227,53 +213,33 @@ def main():
         max_event_tokens=data_args.max_event_tokens,
         max_events=data_args.max_events,
         weight_dict=weight_dict,
-        use_gt_boxes_for_caption=True if training_args.mode == 2 else False, # Use GT boxes for curriculum caption learning in mode 2 only
+        use_gt_boxes_for_caption=False,     # No GT boxes needed in 2-stage training
+        contrastive_mode=contrastive_mode,  # Enable contrastive learning in mode 1
     ) # IMPORTANT: Do not .to(device); Trainer handles device placement and DDP
     
     # Load mode 1 checkpoint for mode 2
-    if training_args.mode == 2:
+    if training_args.mode == 2 and training_args.mode1_checkpoint is not None:
         checkpoint_path = os.path.join(training_args.mode1_checkpoint, 'pytorch_model.bin')
         if os.path.exists(checkpoint_path):
-            print(f'Loading mode 1 checkpoint from: {checkpoint_path}')
+            print(f'Loading mode 1 (contrastive) checkpoint from: {checkpoint_path}')
             state_dict = torch.load(checkpoint_path, map_location='cpu')
             
-            # Handle potential key mismatches due to with_box_refine difference
+            # Handle potential key mismatches due to contrastive_mode difference
             filtered_state = handle_key_mismatches(state_dict, model.state_dict())
             model.load_state_dict(filtered_state, strict=False)
             print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from mode 1')
         else: raise FileNotFoundError(f'Mode 1 checkpoint not found: {checkpoint_path}')
     
-    # Load mode 2 checkpoint for mode 3
-    if training_args.mode == 3 and training_args.mode2_checkpoint is not None:
-        checkpoint_path = os.path.join(training_args.mode2_checkpoint, 'pytorch_model.bin')
-        if os.path.exists(checkpoint_path):
-            print(f'Loading mode 2 checkpoint from: {checkpoint_path}')
-            state_dict = torch.load(checkpoint_path, map_location='cpu')
-            
-            # Handle potential key mismatches due to with_box_refine difference
-            filtered_state = handle_key_mismatches(state_dict, model.state_dict())
-            model.load_state_dict(filtered_state, strict=False)
-            print(f'Loaded {len(filtered_state)}/{len(state_dict)} parameters from mode 2')
-        else: raise FileNotFoundError(f'Mode 2 checkpoint not found: {checkpoint_path}')
-    
     # Setup freezing based on mode
     print('\n' + '='*80)
-    if training_args.mode == 1: # Train localization, freeze caption head
-        print('MODE 1: Training Localization (caption_head frozen)')
-        unfreeze_module(model) # Unfreeze everything first
-        if isinstance(model.caption_head, torch.nn.ModuleList): # Freeze caption heads
-            for head in model.caption_head: freeze_module(head)
-        else: freeze_module(model.caption_head)
-        
-    elif training_args.mode == 2: # Train captioning, freeze localization
-        print('MODE 2: Training Caption Head (localization frozen)')
+    if training_args.mode == 1: # Contrastive pre-training, freeze everything except backbone + text encoder
+        print('MODE 1: Contrastive Pre-training (backbone + text encoder trainable)')
         freeze_module(model) # Freeze everything first
-        if isinstance(model.caption_head, torch.nn.ModuleList): # Unfreeze caption heads
-            for head in model.caption_head: unfreeze_module(head)
-        else: unfreeze_module(model.caption_head)
-    
-    else: # Joint fine-tuning - unfreeze everything
-        print('MODE 3: Joint Fine-tuning (all parameters trainable)')
+        unfreeze_module(model.transformer.backbone)  # Train the backbone
+        if model.text_embed is not None: unfreeze_module(model.text_embed) # Train text embedding
+        if model.text_proj is not None: unfreeze_module(model.text_proj)   # Train text projection
+    else: # Mode 2: Joint training - unfreeze everything
+        print('MODE 2: Joint Training (all parameters trainable)')
         unfreeze_module(model) # Unfreeze everything
     print('='*80)
     
@@ -305,11 +271,10 @@ def main():
         print(f'Model saved to: {save_path}')
         
         if training_args.mode == 1:
-            print(f'To continue with Mode 2, run:')
+            print(f'\nTo continue with Mode 2 (joint training), run:')
             print(f'python main.py --mode 2 --mode1_checkpoint {save_path} --output_dir checkpoints/mode2')
         elif training_args.mode == 2:
-            print(f'To continue with Mode 3 (optional joint fine-tuning), run:')
-            print(f'python main.py --mode 3 --mode2_checkpoint {save_path} --output_dir checkpoints/mode3 --learning_rate 1e-5 --num_train_epochs 30')
+            print(f'\nTraining complete! The model is ready for evaluation.')
     
     # Cleanup to free memory
     model.to('cpu')
