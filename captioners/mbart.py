@@ -56,11 +56,22 @@ class MBartDecoderCaptioner(nn.Module):
         )
         self.mbart_decoder = MBartForCausalLM.from_pretrained('captioners/trimmed_mbart', config=self.mbart_config, ignore_mismatched_sizes=True)
         
-        # Query token is prepended to the visual window to guide MBart's cross-attention
-        self.query_visual_fusion = nn.Sequential(
+        # Projections for query context token and visual window features
+        self.query_context_proj = nn.Sequential( # This token is prepended to visual window to guide MBart's cross-attention
             nn.Linear(config.d_model, config.d_model),
             nn.LayerNorm(config.d_model),
-            nn.GELU(),
+            nn.ReLU(inplace=True),
+        )
+        self.visual_context_proj = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.LayerNorm(config.d_model),
+            nn.ReLU(inplace=True),
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.LayerNorm(config.d_model),
+            nn.ReLU(inplace=True),
+            nn.Linear(config.d_model, config.d_model),
         )
         self.window_pos_embed = nn.Parameter(torch.zeros(1, window_size, config.d_model)) # Positional encoding for the window tokens (learnable)
         
@@ -118,10 +129,13 @@ class MBartDecoderCaptioner(nn.Module):
         windowed_features = gathered_features.view(batch_size, num_queries, self.window_size, D)  # (B, Q, window_size, D)
         windowed_features = windowed_features + self.window_pos_embed                             # (B, Q, window_size, D)
         
+        # Prepare query context token and visual context features
+        query_context = self.query_context_proj(decoder_hidden_states).unsqueeze(2)               # (B, Q, 1, D)
+        visual_context = self.visual_context_proj(windowed_features)                              # (B, Q, window_size, D)
+        
         # Combine query context token with windowed features and apply fusion
-        query_context = decoder_hidden_states.unsqueeze(2)                                        # (B, Q, 1, D)
-        encoder_hidden_states = torch.cat([query_context, windowed_features], dim=2)              # (B, Q, 1 + window_size, D)
-        encoder_hidden_states = self.query_visual_fusion(encoder_hidden_states)                   # (B, Q, 1 + window_size, D)
+        encoder_hidden_states = torch.cat([query_context, visual_context], dim=2)                 # (B, Q, 1 + window_size, D)
+        encoder_hidden_states = self.fusion(encoder_hidden_states)                   # (B, Q, 1 + window_size, D)
         encoder_hidden_states = encoder_hidden_states.view(num_events, 1 + self.window_size, D)   # (B*Q, 1 + window_size, D)
         
         # Create attention mask (all ones since all positions are valid)
