@@ -45,15 +45,13 @@ class MBartDecoderCaptioner(nn.Module):
             eos_token_id=eos_token_id,
             forced_eos_token_id=eos_token_id,
             scale_embedding=True,
-            add_cross_attention=True, # Enable cross-attention to attend to visual features
         )
         self.mbart_decoder = MBartForCausalLM.from_pretrained('captioners/trimmed_mbart', config=self.mbart_config, ignore_mismatched_sizes=True)
-        self.feature_levels_fusion = nn.Linear(config.d_model * config.num_feature_levels, config.d_model)
         
         # Cross-attention projection: project concatenated visual and query features to match decoder's expected encoder hidden states
         # We concatenate visual features (from transformer_outputs) with query embeddings for richer representation
-        # Input: 2*D (visual features + query embeddings), Output: D * max_event_tokens (for each token in the caption)
-        self.visual_query_fusion = nn.Linear(config.d_model * 2, config.d_model * max_event_tokens)
+        # Input: 2*D (visual features + query embeddings), Output: D (mBart encoder hidden state dimension)
+        self.visual_query_projection = nn.Linear(config.d_model * 2, config.d_model)
         
         
     def prepare_for_captioning(self, num_queries, reference_points, transformer_outputs): # Prepare reference points by scaling with valid ratios
@@ -102,21 +100,22 @@ class MBartDecoderCaptioner(nn.Module):
             gathered_features = torch.gather(level_features, 1, indices_expanded)  # (B, Q, D)
             visual_features_per_level.append(gathered_features)
         
-        # Concatenate features from all levels and average
-        visual_features = torch.cat(visual_features_per_level, dim=-1)  # (B, Q, D * n_levels)
-        return self.feature_levels_fusion(visual_features)  # (B, Q, D)
+        # Aggregate features from all levels (e.g., via average pooling)
+        visual_features = torch.stack(visual_features_per_level, dim=2)  # (B, Q, n_levels, D)
+        return visual_features.mean(dim=2)  # (B, Q, D) - average pooling over levels
     
     
     def prepare_encoder_hidden_states(self, decoder_hidden_states, reference_points, transformer_outputs):
-        ''' Prepare encoder hidden states for the mBart decoder.
+        ''' Prepare encoder hidden states for mBart decoder by extracting visual features and concatenating with query embeddings.
         
         Args:
             decoder_hidden_states: (B, Q, D) - query embeddings from DETR decoder
             reference_points: (B, Q, 2) - reference points for extracting visual features
             transformer_outputs: dict - outputs from transformer containing encoder hidden states
+            
         Returns:
-            encoder_hidden_states: (B*Q, max_event_tokens, D) - prepared encoder hidden states
-            encoder_attention_mask: (B*Q, max_event_tokens) - attention mask for encoder hidden states
+            encoder_hidden_states: (B*Q, 1, D) - prepared encoder hidden states for mBart decoder
+            encoder_attention_mask: (B*Q, 1) - attention mask for encoder hidden states
         '''
         batch_size, num_queries, _ = decoder_hidden_states.shape
         num_events = batch_size * num_queries
@@ -128,15 +127,12 @@ class MBartDecoderCaptioner(nn.Module):
         visual_features = self.extract_visual_features(reference_points, transformer_outputs)  # (B, Q, D)
         
         # Concatenate visual features with query embeddings for richer representation
-        combined_features = torch.cat([visual_features, decoder_hidden_states], dim=-1)  # (B, Q, D*2)
+        combined_features = torch.cat([visual_features, decoder_hidden_states], dim=-1)  # (B, Q, 2*D)
         
         # Project concatenated features to encoder hidden state dimension
-        encoder_hidden_states = self.visual_query_fusion(combined_features)  # (B, Q, D * max_event_tokens)
-        encoder_hidden_states = encoder_hidden_states.view(num_events, self.max_event_tokens, -1)  # (B*Q, max_event_tokens, D)
-        encoder_attention_mask = torch.ones(
-            num_events, self.max_event_tokens, 
-            device=decoder_hidden_states.device, dtype=torch.long
-        )  # (B*Q, max_event_tokens)
+        encoder_hidden_states = self.visual_query_projection(combined_features)  # (B, Q, D)
+        encoder_hidden_states = encoder_hidden_states.view(num_events, 1, -1)    # (B*Q, 1, D)
+        encoder_attention_mask = torch.ones(num_events, 1, device=decoder_hidden_states.device, dtype=torch.long)  # (B*Q, 1)
         return encoder_hidden_states, encoder_attention_mask
     
 
@@ -144,21 +140,21 @@ class MBartDecoderCaptioner(nn.Module):
         ''' Forward pass with teacher forcing during training.
         
         Args:
-            seq_tokens: (B, Q, max_event_tokens) or (B*Q, max_event_tokens) - ground truth token sequences without BOS
+            seq_tokens: (B, Q, L) or (B*Q, L) - ground truth token sequences without BOS
             decoder_hidden_states: (B, Q, D) - query embeddings from DETR decoder
             reference_points: (B, Q, 2) - reference points for extracting visual features
             transformer_outputs: dict - outputs from transformer containing encoder hidden states
             
         Returns:
-            outputs: (B, Q, max_event_tokens-1, vocab_size) - predicted logits for next tokens
+            outputs: (B, Q, L-1, vocab_size) - predicted logits for next tokens
         '''
         batch_size, num_queries, _ = decoder_hidden_states.shape
-        if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, max_event_tokens)
+        if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, L)
         
         # Prepare encoder hidden states and attention mask for mBart decoder
         encoder_hidden_states, encoder_attention_mask = self.prepare_encoder_hidden_states(
             decoder_hidden_states, reference_points, transformer_outputs
-        )  # (B*Q, max_event_tokens, D), (B*Q, max_event_tokens)
+        ) # (B*Q, 1, D), (B*Q, 1)
         
         # shift_tokens_right shifts: [token1, token2, ..., EOS] -> [decoder_start, token1, token2, ...]
         input_ids = shift_tokens_right(seq_tokens, self.pad_token_id) # Input tokens: all tokens except the last one (for teacher forcing)
@@ -186,7 +182,7 @@ class MBartDecoderCaptioner(nn.Module):
         
         Args:
             decoder_hidden_states: (B, Q, D) - query embeddings from DETR decoder
-            reference_points: (B, Q, n_levels, 2) - reference points for extracting visual features
+            reference_points: (B, Q, 2) - reference points for extracting visual features
             transformer_outputs: dict - transformer outputs containing encoder hidden states
             sample_max: if True, use greedy decoding; if False, use sampling
             temperature: sampling temperature
@@ -204,7 +200,7 @@ class MBartDecoderCaptioner(nn.Module):
         # Prepare encoder hidden states and attention mask for mBart decoder
         encoder_hidden_states, encoder_attention_mask = self.prepare_encoder_hidden_states(
             decoder_hidden_states, reference_points, transformer_outputs
-        )  # (B*Q, max_event_tokens, D), (B*Q, max_event_tokens)
+        ) # (B*Q, 1, D), (B*Q, 1)
         
         # Generate using HuggingFace's generate method
         generation_outputs = self.mbart_decoder.generate(
