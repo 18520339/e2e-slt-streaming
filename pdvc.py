@@ -70,10 +70,14 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         contrastive_mode: bool = False,  # Enable contrastive learning for backbone pretraining
     ):
         super().__init__(config)
-        self.use_gt_boxes_for_caption = use_gt_boxes_for_caption
         self.contrastive_mode = contrastive_mode
         self.transformer = DeformableDetrModel(config, temporal_kernel=temporal_kernel, contrastive_mode=contrastive_mode)
         self.matcher = DeformableDetrHungarianMatcher(class_cost=config.class_cost, bbox_cost=config.bbox_cost, giou_cost=config.giou_cost)
+        
+        self.use_gt_boxes_for_caption = use_gt_boxes_for_caption
+        self.pad_token_id = pad_token_id
+        self.eos_token_id = eos_token_id
+        self.decoder_start_token_id = decoder_start_token_id
         
         # Detection heads on top: class + 2D temporal box (center, width)
         self.count_head = nn.Linear(config.d_model, max_events + 1)  # Predict count of events in [0, max_events]
@@ -113,6 +117,7 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         self.contrastive_loss = ContrastiveLoss() if contrastive_mode else None
         
         # Text encoder for contrastive learning (simple embedding + projection)
+        self.text_embed, self.text_proj = None, None
         if contrastive_mode:
             self.text_embed = nn.Embedding(vocab_size, config.d_model, padding_idx=pad_token_id)
             self.text_proj = nn.Sequential(
@@ -121,9 +126,6 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 nn.GELU(),
             )
             self.pad_token_id = pad_token_id
-        else:
-            self.text_embed = None
-            self.text_proj = None
         self.post_init()
 
 
@@ -242,7 +244,12 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 
                 # Align target seq_tokens to query order for teacher forcing (shape: B x Q x L)
                 max_len = self.caption_head[layer].max_event_tokens
-                aligned_tokens = torch.zeros(B, Q, max_len, dtype=torch.long, device=device)
+                aligned_tokens = torch.full((B, Q, max_len), self.pad_token_id, dtype=torch.long, device=device)
+                aligned_tokens[:, :, 0] = self.eos_token_id  # First token is EOS for all queries (will be shifted to decoder_start)
+                
+                # Initialize with [EOS, decoder_start, PAD, PAD, ...] so unmatched queries have valid sequences for shift_tokens_right
+                if self.decoder_start_token_id is not None:
+                    aligned_tokens[:, :, 1] = self.decoder_start_token_id 
                 
                 if self.use_gt_boxes_for_caption: # Provide perfect localization to allow the model to focus purely on language 
                     aligned_gt_boxes = torch.zeros(B, Q, 2, dtype=reference.dtype, device=device) # Create aligned GT box references for caption head
