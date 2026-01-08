@@ -140,13 +140,13 @@ class MBartDecoderCaptioner(nn.Module):
         ''' Forward pass with teacher forcing during training.
         
         Args:
-            seq_tokens: (B, Q, L) or (B*Q, L) - ground truth token sequences without BOS
+            seq_tokens: (B, Q, max_event_tokens) or (B*Q, max_event_tokens) - ground truth token sequences without BOS
             decoder_hidden_states: (B, Q, D) - query embeddings from DETR decoder
             reference_points: (B, Q, 2) - reference points for extracting visual features
             transformer_outputs: dict - outputs from transformer containing encoder hidden states
             
         Returns:
-            outputs: (B, Q, L-1, vocab_size) - predicted logits for next tokens
+            outputs: (B, Q, max_event_tokens, vocab_size) - predicted logits for next tokens
         '''
         batch_size, num_queries, _ = decoder_hidden_states.shape
         if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, L)
@@ -156,7 +156,7 @@ class MBartDecoderCaptioner(nn.Module):
             decoder_hidden_states, reference_points, transformer_outputs
         ) # (B*Q, 1, D), (B*Q, 1)
         
-        # shift_tokens_right shifts: [token1, token2, ..., EOS] -> [decoder_start, token1, token2, ...]
+        # shift_tokens_right shifts: [token1, token2, ..., EOS, decoder_start] -> [decoder_start, token1, token2, ..., EOS]
         input_ids = shift_tokens_right(seq_tokens, self.pad_token_id) # Input tokens: all tokens except the last one (for teacher forcing)
         attention_mask = (input_ids != self.pad_token_id).long() # Create attention mask for input tokens (1 for real tokens, 0 for padding)
 
@@ -227,7 +227,7 @@ class MBartDecoderCaptioner(nn.Module):
         # Compute log probs only for the tokens that were actually generated
         if num_generated > 0:
             scores_tensor = torch.stack(raw_scores, dim=1)  # (B*Q, num_generated, vocab_size)
-            scores_log_probs = F.log_softmax(scores_tensor, dim=-1)
+            scores_log_probs = F.log_softmax(scores_tensor / temperature, dim=-1)
             
             # Get the actual generated tokens (excluding decoder_start_token) and gather log probs for them
             generated_tokens = raw_sequences[:, 1:1+num_generated]  # (B*Q, num_generated)
@@ -245,9 +245,9 @@ class MBartDecoderCaptioner(nn.Module):
         else:
             seq_tokens = raw_sequences[:, :self.max_event_tokens]
         
-        # Build full log probs: [0 for start token] + [generated log probs] + [-inf for padding]
-        bos_log_probs = torch.zeros(num_events, 1, device=decoder_hidden_states.device)
-        seq_log_probs = torch.cat([bos_log_probs, seq_log_probs], dim=1)  # (B*Q, 1 + num_generated)
+        # Build full log probs: [decoder_start_token] + [generated log probs] + [-inf for padding]
+        start_log_probs = torch.zeros(num_events, 1, device=decoder_hidden_states.device)
+        seq_log_probs = torch.cat([start_log_probs, seq_log_probs], dim=1)  # (B*Q, 1 + num_generated)
         
         # Pad or truncate seq_log_probs to max_event_tokens for consistency
         if seq_log_probs.size(1) < self.max_event_tokens:

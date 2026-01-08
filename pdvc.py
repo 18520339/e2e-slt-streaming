@@ -253,22 +253,22 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
                 
                 if self.use_gt_boxes_for_caption: # Provide perfect localization to allow the model to focus purely on language 
                     aligned_gt_boxes = torch.zeros(B, Q, 2, dtype=reference.dtype, device=device) # Create aligned GT box references for caption head
-                    for b, (src_idx, tgt_idx) in enumerate(match_indices):
-                        if src_idx.numel() == 0: continue
-                        src_idx, tgt_idx = src_idx.to(device), tgt_idx.to(device)
-                        tgt_tokens = labels[b]['seq_tokens'][tgt_idx].to(device)
-                        tgt_boxes = labels[b]['boxes'][tgt_idx].to(dtype=reference.dtype, device=device)  # Match dtype
+                    for b, (src_idxs, tgt_idxs) in enumerate(match_indices):
+                        if src_idxs.numel() == 0: continue
+                        src_idxs, tgt_idxs = src_idxs.to(device), tgt_idxs.to(device)
+                        tgt_tokens = labels[b]['seq_tokens'][tgt_idxs].to(device)
+                        tgt_boxes = labels[b]['boxes'][tgt_idxs].to(dtype=reference.dtype, device=device)  # Match dtype
                         L = min(max_len, tgt_tokens.shape[-1])
-                        aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
-                        aligned_gt_boxes[b, src_idx] = tgt_boxes  # Use GT boxes
+                        aligned_tokens[b, src_idxs, :L] = tgt_tokens[:, :L]
+                        aligned_gt_boxes[b, src_idxs] = tgt_boxes  # Use GT boxes
                     cap_reference = aligned_gt_boxes # Use GT boxes as reference for caption head
                 else:
-                    for b, (src_idx, tgt_idx) in enumerate(match_indices):
-                        if src_idx.numel() == 0: continue
-                        src_idx, tgt_idx = src_idx.to(device), tgt_idx.to(device)
-                        tgt_tokens = labels[b]['seq_tokens'][tgt_idx].to(device)  # (M, L_label)
+                    for b, (src_idxs, tgt_idxs) in enumerate(match_indices):
+                        if src_idxs.numel() == 0: continue
+                        src_idxs, tgt_idxs = src_idxs.to(device), tgt_idxs.to(device)
+                        tgt_tokens = labels[b]['seq_tokens'][tgt_idxs].to(device)  # (M, L_label)
                         L = min(max_len, tgt_tokens.shape[-1])
-                        aligned_tokens[b, src_idx, :L] = tgt_tokens[:, :L]
+                        aligned_tokens[b, src_idxs, :L] = tgt_tokens[:, :L]
                     cap_reference = outputs_coords[-1] # Use predicted/learned reference points
                 
                 cap_probs = self.caption_head[layer](aligned_tokens, layer_hidden_states, cap_reference, transformer_outputs_for_captioner)

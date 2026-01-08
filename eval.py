@@ -122,6 +122,7 @@ def main():
     ).to(device)
     
     model.load_state_dict(torch.load(os.path.join(eval_args.checkpoint_path, 'pytorch_model.bin')))
+    model.eval()  # CRITICAL: Set model to evaluation mode
     total_params = sum(p.numel() for p in model.parameters())
     print(f'Model loaded with {total_params / 1e6:.2f}M parameters')
     
