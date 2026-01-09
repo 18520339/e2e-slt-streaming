@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
 import numpy as np
 from .gcn_utils import Graph
 from .stgcn_block import get_stgcn_chain
@@ -51,9 +49,9 @@ class CoSign1s(nn.Module):
             #   With only 3 channels, a large γ easily explodes values.
             # - Redundancy: the following Linear already has weight and bias, so representational capacity is not reduced; 
             #   any needed affine transform can be learned there.
-            nn.LayerNorm(3, elementwise_affine=False), # Avoid returning NaNs
+            # nn.LayerNorm(3, elementwise_affine=False), # Avoid returning NaNs
             nn.Linear(3, 64), 
-            nn.ReLU(inplace=True)
+            nn.GELU()  # GELU instead of ReLU to preserve variance through negative values
         )
 
         self.projections = {}
@@ -71,7 +69,10 @@ class CoSign1s(nn.Module):
 
         self.gcn_modules = nn.ModuleDict(self.gcn_modules)
         self.projections = nn.ModuleDict(self.projections)
-        self.fusion = nn.Sequential(nn.Linear(final_dim * len(KPS_MODULES), hidden_size), nn.ReLU(inplace=True))
+        self.fusion = nn.Sequential(
+            nn.Linear(final_dim * len(KPS_MODULES), hidden_size), 
+            nn.GELU()  # GELU instead of ReLU to preserve variance through negative values
+        )
         self.final_dim = final_dim
     
     

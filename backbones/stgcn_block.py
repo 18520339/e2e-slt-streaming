@@ -19,16 +19,16 @@ class GCN_unit(nn.Module):
         self.adaptive = adaptive
         if self.adaptive: self.A = nn.Parameter(A.clone())
         else: self.register_buffer('A', A)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.gn = nn.GroupNorm(min(32, out_channels), out_channels)  # GroupNorm instead of BatchNorm for consistent train/eval behavior
+        self.gelu = nn.GELU()
 
     def forward(self, x, len_x):
         x = self.conv(x)
         n, kc, t, v = x.size()
         x = x.view(n, self.kernel_size, kc // self.kernel_size, t, v)
         x = torch.einsum('nkctv,kvw->nctw', (x, self.A)).contiguous()
-        y = self.bn(x)
-        return self.relu(y)
+        y = self.gn(x)
+        return self.gelu(y)
     
 
 class STGCN_block(nn.Module):
@@ -49,7 +49,7 @@ class STGCN_block(nn.Module):
                     stride=(stride, 1),
                     padding=((kernel_sizes[0] - 1) // 2, 0),
                 ),
-                nn.BatchNorm2d(out_channels),
+                nn.GroupNorm(min(32, out_channels), out_channels),  # GroupNorm for consistent inference
                 nn.Dropout(dropout, inplace=True),
             )
         else: self.tcn = nn.Identity()
@@ -58,15 +58,15 @@ class STGCN_block(nn.Module):
         elif in_channels == out_channels and stride == 1: self.residual = lambda x: x
         else: self.residual = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=(stride, 1)),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(min(32, out_channels), out_channels),  # GroupNorm for consistent inference
         )
-        self.relu = nn.ReLU(inplace=True)
+        self.gelu = nn.GELU()
 
     def forward(self, x, len_x=None):
         res = self.residual(x)
         x = self.gcn(x, len_x)
         x = self.tcn(x) + res
-        return self.relu(x)
+        return self.gelu(x)
     
 
 class STGCNChain(nn.Sequential):
