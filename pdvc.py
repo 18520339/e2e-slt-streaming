@@ -336,6 +336,69 @@ class DeformableDetrForObjectDetection(DeformableDetrPreTrainedModel):
         )
 
 
+def debug_variance(model, pixel_values, pixel_mask, labels=None):
+    # Debug script to find where input variance is lost. Run with 2+ different inputs in a batch to check variance.
+    B = pixel_values.shape[0]
+    print(f"\n{'='*60}")
+    print("VARIANCE DEBUGGING - Testing if outputs differ across batch")
+    print(f"{'='*60}")
+    
+    # 1. Check input variance
+    input_var = pixel_values.var(dim=0).mean()
+    print(f"\n[1] Input pixel_values variance: {input_var.item():.6f}")
+    
+    # 2. Check backbone output
+    backbone_out = model.transformer.backbone(pixel_values)
+    if isinstance(backbone_out, tuple): backbone_out = backbone_out[0]
+    backbone_out = backbone_out.permute(0, 2, 1)  # [B, d_model, T]
+    backbone_var = (backbone_out[0] - backbone_out[1:]).abs().mean() if B > 1 else backbone_out.var()
+    print(f"[2] Backbone output difference (B0 vs others): {backbone_var.item():.6f}")
+    
+    # 3. Check position embeddings
+    pos_embed = model.transformer.position_embeddings(backbone_out, pixel_mask.to(torch.bool), durations=torch.sum(pixel_mask, 1))
+    pos_var = (pos_embed[0] - pos_embed[1:]).abs().mean() if B > 1 else pos_embed.var()
+    print(f"[3] Position embeddings difference: {pos_var.item():.6f}")
+    
+    # 4. Check encoder output
+    with torch.no_grad():
+        transformer_out = model.transformer(pixel_values, pixel_mask, labels=labels, return_dict=True)
+    
+    enc_hidden = transformer_out.encoder_last_hidden_state
+    enc_var = (enc_hidden[0] - enc_hidden[1:]).abs().mean() if B > 1 else enc_hidden.var()
+    print(f"[4] Encoder output difference: {enc_var.item():.6f}")
+    
+    # 5. Check decoder hidden states
+    dec_hidden = transformer_out.intermediate_hidden_states[:, -1]  # Last layer
+    dec_var = (dec_hidden[0] - dec_hidden[1:]).abs().mean() if B > 1 else dec_hidden.var()
+    print(f"[5] Decoder hidden states difference: {dec_var.item():.6f}")
+    
+    # 6. Check reference points
+    ref_points = transformer_out.intermediate_reference_points[:, -1]  # Last layer
+    ref_var = (ref_points[0] - ref_points[1:]).abs().mean() if B > 1 else ref_points.var()
+    print(f"[6] Reference points difference: {ref_var.item():.6f}")
+    
+    # 7. Check init reference points (before decoder)
+    init_ref = transformer_out.init_reference_points
+    init_var = (init_ref[0] - init_ref[1:]).abs().mean() if B > 1 else init_ref.var()
+    print(f"[7] Initial reference points difference: {init_var.item():.6f}")
+    
+    print(f"\n{'='*60}")
+    print("INTERPRETATION:")
+    print("- If variance drops to ~0 at step N, the bug is at/before step N")
+    print("- Steps with 0 variance = batch items are identical")
+    print(f"{'='*60}")
+    
+    return {
+        'input': input_var.item(),
+        'backbone': backbone_var.item(),
+        'position': pos_var.item(),
+        'encoder': enc_var.item(),
+        'decoder': dec_var.item(),
+        'reference_points': ref_var.item(),
+        'init_reference': init_var.item(),
+    }
+
+
 if __name__ == '__main__':
     from loader import get_loader
     from transformers import AutoTokenizer
@@ -395,12 +458,12 @@ if __name__ == '__main__':
         max_events=max_events,
         weight_dict={'loss_ce': 2, 'loss_bbox': 0, 'loss_giou': 4, 'loss_counter': 2, 'loss_caption': 2}
     ).to(device)
-    
     total_params = sum(p.numel() for p in model.parameters())
     print(f'Model initialized with {total_params / 1e6:.2f}M parameters')
 
     # Test Training and Inference step
     model.train()
+    debug_variance(model, pixel_values, pixel_mask, labels)
     with torch.enable_grad():
         print('\n--- Training step ---')
         out = model(pixel_values=pixel_values, pixel_mask=pixel_mask, labels=labels, return_dict=True)
@@ -411,8 +474,9 @@ if __name__ == '__main__':
         print('- pred_cap_logits:', out.pred_cap_logits.shape)
         print('- pred_cap_tokens:', out.pred_cap_tokens.shape)
         out.loss.backward()
-        
+    
     model.eval()
+    debug_variance(model, pixel_values, pixel_mask, labels)
     with torch.no_grad():
         if config.with_box_refine:
             print('\n--- Inference step with learnt proposals (with_box_refine=True) ---')
