@@ -189,6 +189,7 @@ def main():
         decoder_attention_heads=model_args.decoder_attention_heads,
         encoder_n_points=model_args.encoder_n_points,
         decoder_n_points=model_args.decoder_n_points,
+        activation_function='gelu',
         num_feature_levels=model_args.num_feature_levels,  # The number of input feature levels
         num_queries=model_args.num_queries,                # Maximum number of events a window can have
         num_labels=model_args.num_labels,                  # Single foreground class for caption
