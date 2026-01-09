@@ -4,12 +4,12 @@ import torch.nn.functional as F
 from torch import nn, Tensor, FloatTensor, LongTensor
 
 from dataclasses import dataclass
-from typing import Union, List, Optional, Tuple
+from typing import Union, List, Optional
 from transformers import DeformableDetrConfig
 from transformers.models.deformable_detr.modeling_deformable_detr import (
     BaseModelOutput, ModelOutput, 
     DeformableDetrPreTrainedModel,
-    inverse_sigmoid
+    inverse_sigmoid, replace_batch_norm
 )
 from backbones import CoSign1s
 from .position_encoding import PositionEmbeddingSine
@@ -48,8 +48,10 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         # Positional encoding: d_model//2 for temporal pos, d_model//2 for duration pos
         self.position_embeddings = PositionEmbeddingSine(config.d_model // 2, normalize=True)
         self.backbone = CoSign1s(temporal_kernel=temporal_kernel, hidden_size=config.d_model, contrastive_mode=contrastive_mode)
+        with torch.no_grad(): # Recursively replace all nn.BatchNorm2d with DeformableDetrFrozenBatchNorm2d
+            replace_batch_norm(self.backbone)
 
-        # Input projection: map each backbone level to d_model with 1x1 Conv2d
+        # Input projection: map each backbone level to d_model with 1x1 Conv1d
         if config.num_feature_levels > 1:
             input_proj_list = []
             in_channels = config.d_model
@@ -60,7 +62,7 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
             for _ in range(config.num_feature_levels - 1): # Extra levels from last backbone level
                 input_proj_list.append(nn.Sequential(
                     nn.Conv1d(in_channels, config.d_model, kernel_size=3, stride=2, padding=1),
-                    nn.GroupNorm(32, config.d_model),
+                    nn.GroupNorm(32, config.d_model)
                 ))
                 in_channels = config.d_model
             self.input_proj = nn.ModuleList(input_proj_list)
