@@ -124,7 +124,7 @@ class TemporalMSDA(nn.Module):
         reference_points=None, temporal_shapes=None, level_start_index=None,
     ):
         # Add position embeddings to the hidden states before projecting to queries and keys
-        if position_embeddings is not None: hidden_states += position_embeddings
+        if position_embeddings is not None: hidden_states = hidden_states + position_embeddings
         batch_size, num_queries, _ = hidden_states.shape
         batch_size, sequence_length, _ = encoder_hidden_states.shape
         if temporal_shapes.sum() != sequence_length:

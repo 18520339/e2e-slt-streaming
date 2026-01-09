@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
-from transformers import AutoTokenizer, DeformableDetrConfig, MBartConfig, MBartForCausalLM
+from transformers import DeformableDetrConfig, MBartConfig, MBartForCausalLM
 from transformers.models.mbart.modeling_mbart import shift_tokens_right
 
 
@@ -204,6 +204,7 @@ class MBartDecoderCaptioner(nn.Module):
         
         # Generate using HuggingFace's generate method
         generation_outputs = self.mbart_decoder.generate(
+            input_ids=torch.full((num_events, 1), self.decoder_start_token_id, device=decoder_hidden_states.device),
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=encoder_attention_mask,
             max_new_tokens=self.max_event_tokens,
