@@ -137,14 +137,12 @@ def main():
     debug_variance(model, test_pixel_values, test_pixel_mask)
     debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
     debug_query_variance(model, test_pixel_values, test_pixel_mask)
-    model.transformer.backbone.debug_variance(test_pixel_values)
     
     print('[Model variance after eval mode]')
     model.eval() # Test after enabling inference mode
     debug_variance(model, test_pixel_values, test_pixel_mask)
     debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
     debug_query_variance(model, test_pixel_values, test_pixel_mask)
-    model.transformer.backbone.debug_variance(test_pixel_values)
 
     # Evaluation
     training_args = TrainingArguments( # Create training args for Trainer (required even for evaluation)

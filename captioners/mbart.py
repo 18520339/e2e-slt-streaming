@@ -38,7 +38,6 @@ class MBartDecoderCaptioner(nn.Module):
             num_hidden_layers=num_layers,
             encoder_attention_heads=8,
             decoder_attention_heads=8,
-            activation_function='relu',
             dropout=dropout_rate,
             bos_token_id=bos_token_id,
             pad_token_id=pad_token_id,
