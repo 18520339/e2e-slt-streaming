@@ -129,6 +129,7 @@ class LSTMCaptioner(nn.Module):
         outputs, seq_tokens = [], seq_tokens.long()
         if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, L)
         num_events = batch_size * num_queries
+        seq_len = seq_tokens.size(1)  # L = length of target sequence
 
         # aligned_tokens format is always [EOS, decoder_start, tokens...] from pdvc.py
         # shift_tokens_right transforms: [EOS, decoder_start, token1, ...] -> [decoder_start, token1, ..., EOS]
@@ -136,7 +137,7 @@ class LSTMCaptioner(nn.Module):
         # For MBart: decoder_start_token_id is lang_code, so we get [lang_code, token1, ..., EOS]
         seq_tokens = shift_tokens_right(seq_tokens, self.pad_token_id)
 
-        for i in range(seq_tokens.size(1) - 1):
+        for i in range(seq_len - 1):
             token = seq_tokens[:, i].clone() # (B*Q,)
 
             if self.training and i >= 1 and self.schedule_sampling_prob > 0.0:
@@ -156,7 +157,13 @@ class LSTMCaptioner(nn.Module):
             
             output, state = self.get_log_probs_state(token, state, decoder_hidden_states, reference_points, transformer_outputs)
             outputs.append(output) # (B*Q, vocab_size)
-        outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1) # (B*Q, L-1, vocab_size)
+
+        outputs = torch.cat([output.unsqueeze(1) for output in outputs], 1)
+        if outputs.size(1) < (seq_len - 1): # Pad outputs to match target length if stopped early
+            pad_size = (seq_len - 1) - outputs.size(1)
+            pad_logits = torch.full((num_events, pad_size, self.vocab_size), float('-inf'), device=outputs.device)
+            pad_logits[:, :, self.pad_token_id] = 0.0  # Make PAD token probability 1.0
+            outputs = torch.cat([outputs, pad_logits], 1)
         return outputs.view(batch_size, num_queries, outputs.size(1), -1) # (B, Q, L-1, vocab_size)
 
 
