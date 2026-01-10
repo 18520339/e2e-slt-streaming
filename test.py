@@ -5,7 +5,7 @@ import torch.nn.functional as F
 def debug_variance(model, pixel_values, pixel_mask, labels=None):
     # Debug script to find where input variance is lost. Run with 2+ different inputs in a batch to check variance
     B = pixel_values.shape[0]
-    print(f"\n{'='*60}")
+    print(f"{'='*60}")
     print("VARIANCE DEBUGGING - Testing if outputs differ across batch")
     
     # 1. Check input variance
@@ -47,10 +47,10 @@ def debug_variance(model, pixel_values, pixel_mask, labels=None):
     init_var = (init_ref[0] - init_ref[1:]).abs().mean() if B > 1 else init_ref.var()
     print(f"[7] Initial reference points difference: {init_var.item():.6f}")
     
-    print("INTERPRETATION:")
+    print("\nINTERPRETATION:")
     print("- If variance drops to ~0 at step N, the bug is at/before step N")
     print("- Steps with 0 variance = batch items are identical")
-    print(f"{'='*60}")
+    print(f"{'='*60}\n")
     
     return {
         'input': input_var.item(),
@@ -65,7 +65,7 @@ def debug_variance(model, pixel_values, pixel_mask, labels=None):
 
 def debug_query_variance(model, pixel_values, pixel_mask):
     # Debug variance across QUERIES (events) within each batch item
-    print(f"\n{'='*60}")
+    print(f"{'='*60}")
     print("QUERY VARIANCE DEBUG - Checking if queries differ within each batch")
     
     with torch.no_grad():
@@ -92,7 +92,7 @@ def debug_query_variance(model, pixel_values, pixel_mask):
     print(f"\nQuery embeddings variance: {query_embed.var().item():.6f}")
     query_diff = (query_embed[0:1] - query_embed[1:]).abs().mean()
     print(f"Query embeddings diff (Q0 vs others): {query_diff.item():.6f}")
-    print(f"{'='*60}")
+    print(f"{'='*60}\n")
 
 
 def debug_encoder_layers(model, pixel_values, pixel_mask):
@@ -102,7 +102,7 @@ def debug_encoder_layers(model, pixel_values, pixel_mask):
     transformer = model.transformer
     config = model.config
     
-    print(f"\n{'='*60}")
+    print(f"{'='*60}")
     print("ENCODER LAYER-BY-LAYER VARIANCE DEBUG")
     
     # 1. Get backbone output
@@ -169,4 +169,4 @@ def debug_encoder_layers(model, pixel_values, pixel_mask):
         )
         hidden_states = layer_out[0]
         print(f"[5] After encoder layer {idx} variance: {(hidden_states[0] - hidden_states[1:]).abs().mean().item():.6f}")
-    print(f"{'='*60}")
+    print(f"{'='*60}\n")

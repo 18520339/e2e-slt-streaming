@@ -133,12 +133,12 @@ def main():
     test_pixel_values = test_batch['pixel_values'].to(device)
     test_pixel_mask = test_batch['pixel_mask'].to(device)   
 
-    print('[Model variance before eval mode]')
+    print('\n[Model variance before eval mode]')
     debug_variance(model, test_pixel_values, test_pixel_mask)
     debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
     debug_query_variance(model, test_pixel_values, test_pixel_mask)
     
-    print('[Model variance after eval mode]')
+    print('\n[Model variance after eval mode]')
     model.eval() # Test after enabling inference mode
     debug_variance(model, test_pixel_values, test_pixel_mask)
     debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
