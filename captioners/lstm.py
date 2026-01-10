@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from deformable_detr import TemporalMSDA
 from transformers import DeformableDetrConfig
+from transformers.models.mbart.modeling_mbart import shift_tokens_right
 
 
 class DeformableLSTM(nn.Module): # A deformable version of https://arxiv.org/abs/1502.03044
@@ -80,7 +81,7 @@ class LSTMCaptioner(nn.Module):
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.pad_token_id = pad_token_id
-        self.decoder_start_token_id = None
+        self.decoder_start_token_id = decoder_start_token_id or bos_token_id
         
         self.num_layers = num_layers
         self.max_event_tokens = max_event_tokens
@@ -129,6 +130,12 @@ class LSTMCaptioner(nn.Module):
         if seq_tokens.dim() == 3: seq_tokens = seq_tokens.view(-1, seq_tokens.size(-1))  # (B*Q, L)
         num_events = batch_size * num_queries
 
+        # aligned_tokens format is always [EOS, decoder_start, tokens...] from pdvc.py
+        # shift_tokens_right transforms: [EOS, decoder_start, token1, ...] -> [decoder_start, token1, ..., EOS]
+        # For Bart: decoder_start_token_id == bos_token_id, so we get [BOS, token1, ..., EOS]
+        # For MBart: decoder_start_token_id is lang_code, so we get [lang_code, token1, ..., EOS]
+        seq_tokens = shift_tokens_right(seq_tokens, self.pad_token_id)
+
         for i in range(seq_tokens.size(1) - 1):
             token = seq_tokens[:, i].clone() # (B*Q,)
 
@@ -159,8 +166,10 @@ class LSTMCaptioner(nn.Module):
         state, reference_points = self.prepare_for_captioning(num_queries, reference_points, transformer_outputs)
         num_events = batch_size * num_queries
         
-        # Initialize with <BOS> for all events (B*Q)
-        token = torch.full((num_events,), self.bos_token_id, dtype=torch.long, device=decoder_hidden_states.device)
+        # Initialize with decoder_start_token_id for all events (B*Q)
+        # For Bart: decoder_start_token_id == bos_token_id
+        # For MBart: decoder_start_token_id is the language code
+        token = torch.full((num_events,), self.decoder_start_token_id, dtype=torch.long, device=decoder_hidden_states.device)
         seq_log_probs = torch.full((num_events, self.max_event_tokens), float('-inf'), dtype=torch.float, device=decoder_hidden_states.device)
         seq_tokens = torch.full((num_events, self.max_event_tokens), self.pad_token_id, dtype=torch.long, device=decoder_hidden_states.device)
         
