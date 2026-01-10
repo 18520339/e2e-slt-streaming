@@ -10,10 +10,11 @@ from transformers import (
     HfArgumentParser, TrainingArguments, 
     Trainer,
 )
-from loader import DVCDataset, trainer_collate_fn
+from loader import DVCDataset, trainer_collate_fn, get_loader
 from pdvc import DeformableDetrForObjectDetection
 from captioners import MBartDecoderCaptioner
 from evaluation import preprocess_logits_for_metrics, compute_metrics
+from test import debug_variance, debug_encoder_layers, debug_query_variance
 from config import *
 
 
@@ -121,12 +122,30 @@ def main():
             'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost
         }
     ).to(device)
-    
+
     model.load_state_dict(torch.load(os.path.join(eval_args.checkpoint_path, 'pytorch_model.bin')))
-    model.eval()  # CRITICAL: Set model to evaluation mode
     total_params = sum(p.numel() for p in model.parameters())
     print(f'Model loaded with {total_params / 1e6:.2f}M parameters')
+
+    # Test model variance
+    val_loader = get_loader(split='val', tokenizer=tokenizer, batch_size=4, max_events=10, max_event_tokens=40)
+    test_batch = next(iter(val_loader))
+    test_pixel_values = test_batch['pixel_values'].to(device)
+    test_pixel_mask = test_batch['pixel_mask'].to(device)   
+
+    print('[Model variance before eval mode]')
+    debug_variance(model, test_pixel_values, test_pixel_mask)
+    debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
+    debug_query_variance(model, test_pixel_values, test_pixel_mask)
+    model.transformer.backbone.debug_variance(test_pixel_values)
     
+    print('[Model variance after eval mode]')
+    model.eval() # Test after enabling inference mode
+    debug_variance(model, test_pixel_values, test_pixel_mask)
+    debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
+    debug_query_variance(model, test_pixel_values, test_pixel_mask)
+    model.transformer.backbone.debug_variance(test_pixel_values)
+
     # Evaluation
     training_args = TrainingArguments( # Create training args for Trainer (required even for evaluation)
         output_dir=eval_args.output_dir,
