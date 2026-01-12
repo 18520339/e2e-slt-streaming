@@ -27,7 +27,7 @@ from transformers import (
 )
 from loader import DVCDataset, trainer_collate_fn
 from pdvc import DeformableDetrForObjectDetection
-from captioners import MBartDecoderCaptioner
+from captioners import LSTMCaptioner, MBartDecoderCaptioner
 from config import *
 
 
@@ -59,6 +59,7 @@ class ModelArguments:
     # Caption head parameters
     num_cap_layers: int = field(default=3)
     cap_dropout_rate: float = field(default=0.1)
+    captioner_type: str = field(default='mbart', metadata={'help': 'Type of captioner to use (mbart or lstms)'})
 
 
 @dataclass
@@ -139,9 +140,12 @@ def handle_key_mismatches(state_dict, model_state):
 def main():
     parser = HfArgumentParser((ModelArguments, DataArguments, CustomTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    
-    if training_args.mode == 2 and training_args.mode1_checkpoint is None:
+    if training_args.mode == 1 and model_args.with_box_refine == False:
+        raise ValueError('with_box_refine must be True in mode 1 because GT boxes are needed for contrastive learning.')
+    elif training_args.mode == 2 and training_args.mode1_checkpoint is None:
         print('Warning: Found no --mode1_checkpoint for mode 2. The model will be trained from scratch.')
+        if model_args.with_box_refine == False:
+            print('Warning: Directly use GT boxes for captioning, so all losses except caption loss will be disabled. Only use this for ablation studies.')
     
     # Data Loading
     tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
@@ -203,7 +207,7 @@ def main():
     )
     model = DeformableDetrForObjectDetection(
         config=config,
-        captioner_class=MBartDecoderCaptioner,
+        captioner_class=MBartDecoderCaptioner if model_args.captioner_type=='mbart' else LSTMCaptioner,
         vocab_size=tokenizer.vocab_size,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
@@ -214,7 +218,7 @@ def main():
         max_event_tokens=data_args.max_event_tokens,
         max_events=data_args.max_events,
         weight_dict=weight_dict,
-        use_gt_boxes_for_caption=False,     # No GT boxes needed in 2-stage training
+        use_gt_boxes_for_caption=not model_args.with_box_refine, # No GT boxes needed in 2-stage training
         contrastive_mode=contrastive_mode,  # Enable contrastive learning in mode 1
     ) # IMPORTANT: Do not .to(device); Trainer handles device placement and DDP
     

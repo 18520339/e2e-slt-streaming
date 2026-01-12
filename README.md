@@ -69,7 +69,7 @@ torchrun --nproc_per_node 6 main.py \
 	--num_cap_layers 3 \
 	--num_queries 30 \
 	--num_train_epochs 100 \
-	--learning_rate 5e-4 \
+	--learning_rate 2e-4 \
 	--per_device_train_batch_size 32
 ```
 

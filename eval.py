@@ -42,6 +42,7 @@ class ModelArguments:
     # Caption head / decoder bits
     num_cap_layers: int = field(default=3)
     cap_dropout_rate: float = field(default=0.1)
+    captioner_type: str = field(default='mbart', metadata={'help': 'Type of captioner to use (mbart or lstms)'})
 
 
 @dataclass
@@ -107,7 +108,7 @@ def main():
     )
     model = DeformableDetrForObjectDetection(
         config=config,
-        captioner_class=MBartDecoderCaptioner,
+        captioner_class=MBartDecoderCaptioner if model_args.captioner_type=='mbart' else LSTMCaptioner,
         vocab_size=tokenizer.vocab_size,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
@@ -117,6 +118,7 @@ def main():
         cap_dropout_rate=model_args.cap_dropout_rate,
         max_event_tokens=data_args.max_event_tokens,
         max_events=data_args.max_events,
+        use_gt_boxes_for_caption=not model_args.with_box_refine, # No GT boxes needed in 2-stage training
         weight_dict={
             'loss_ce': model_args.class_cost, 'loss_bbox': model_args.bbox_cost, 'loss_giou': model_args.giou_cost, 
             'loss_counter': model_args.counter_cost, 'loss_caption': model_args.caption_cost
@@ -128,21 +130,23 @@ def main():
     print(f'Model loaded with {total_params / 1e6:.2f}M parameters')
 
     # Test model variance
-    val_loader = get_loader(split='val', tokenizer=tokenizer, batch_size=4, max_events=10, max_event_tokens=40)
-    test_batch = next(iter(val_loader))
-    test_pixel_values = test_batch['pixel_values'].to(device)
-    test_pixel_mask = test_batch['pixel_mask'].to(device)   
+    if model_args.with_box_refine:
+        val_loader = get_loader(split='val', tokenizer=tokenizer, batch_size=4, max_events=10, max_event_tokens=40)
+        test_batch = next(iter(val_loader))
+        test_pixel_values = test_batch['pixel_values'].to(device)
+        test_pixel_mask = test_batch['pixel_mask'].to(device)   
 
-    print('\n[Model variance before eval mode]')
-    debug_variance(model, test_pixel_values, test_pixel_mask)
-    debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
-    debug_query_variance(model, test_pixel_values, test_pixel_mask)
+        print('\n[Model variance before eval mode]')
+        debug_variance(model, test_pixel_values, test_pixel_mask)
+        debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
+        debug_query_variance(model, test_pixel_values, test_pixel_mask)
     
-    print('\n[Model variance after eval mode]')
     model.eval() # Test after enabling inference mode
-    debug_variance(model, test_pixel_values, test_pixel_mask)
-    debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
-    debug_query_variance(model, test_pixel_values, test_pixel_mask)
+    if model_args.with_box_refine:
+        print('\n[Model variance after eval mode]')
+        debug_variance(model, test_pixel_values, test_pixel_mask)
+        debug_encoder_layers(model, test_pixel_values, test_pixel_mask)
+        debug_query_variance(model, test_pixel_values, test_pixel_mask)
 
     # Evaluation
     training_args = TrainingArguments( # Create training args for Trainer (required even for evaluation)
