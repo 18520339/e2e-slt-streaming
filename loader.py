@@ -76,13 +76,15 @@ class DVCDataset(Dataset):
 
     def _build_video_metadata(self): # Precompute for sampling efficiency
         for video_id in tqdm(self.video_ids, desc=f'Building video metadata for {self.split} split'):
+            # Support two pose layouts:
+            #  (BOBSL)  POSE_ROOT/<video_id>/*.npy   - directory with multiple numbered segments
+            #  (synth)  POSE_ROOT/<video_id>.npy    - single .npy per stream (flat)
+            single_npy = POSE_ROOT / f'{video_id}.npy'
             pose_dir = POSE_ROOT / video_id
-            if not pose_dir.exists():
-                raise FileNotFoundError(f'Pose directory not found: {pose_dir}')
-
-            segment_paths = sorted(list(pose_dir.glob("*.npy")), key=lambda p: p.stem)
-            if not segment_paths: 
-                raise ValueError(f'No .npy files in {pose_dir}')
+            if single_npy.exists(): segment_paths = [single_npy]
+            elif pose_dir.exists(): segment_paths = sorted(list(pose_dir.glob("*.npy")), key=lambda p: p.stem)
+            else: raise FileNotFoundError(f'Pose data not found at {single_npy} or {pose_dir}')
+            if not segment_paths: raise ValueError(f'No .npy files in {pose_dir}')
 
             frame_counts = [np.load(f, mmap_mode='r').shape[0] for f in segment_paths]
             total_frames = sum(frame_counts)
@@ -430,7 +432,7 @@ def get_loader(
     
 if __name__ == '__main__':
     from transformers import AutoTokenizer
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained(TRIMMED_TOKENIZER_DIR)
     train_loader = get_loader('train', tokenizer=tokenizer, batch_size=4)
     
     for batch in train_loader:
