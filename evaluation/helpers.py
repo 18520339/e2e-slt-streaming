@@ -3,13 +3,24 @@ import string
 import evaluate
 from bleurt.score import BleurtScorer
 from typing import Dict, List, Tuple, Optional
-from config import BLEURT_CHECKPOINT_PATH
+from config import BLEURT_CHECKPOINT_PATH, TGT_LANG
 
-bleu = evaluate.load('sacrebleu') # Range: 0-100
+# Language-aware sacrebleu tokenization. mBART codes map to sacrebleu tokenize values.
+SACREBLEU_TOKENIZE_BY_LANG = {
+    'en_XX': '13a',       # default
+    'de_DE': 'intl',      # international tokenization for European text
+    'zh_CN': 'zh',        # Chinese character segmentation
+}
+SACREBLEU_TOKENIZE = SACREBLEU_TOKENIZE_BY_LANG.get(TGT_LANG, '13a')
+
+# BLEURT-20 supports 100+ languages including de_DE and zh_CN; the older BLEURT-base is English-only.
+# Loading is the same; the user must point BLEURT_CHECKPOINT_PATH at a multilingual checkpoint for non-English.
+bleu = evaluate.load('sacrebleu')  # Range: 0-100
 bleurt = BleurtScorer(BLEURT_CHECKPOINT_PATH)
 rouge = evaluate.load('rouge')
 meteor = evaluate.load('meteor')
 cider = evaluate.load('Kamichanw/CIDEr')
+chrf = evaluate.load('chrf') # CHRF as a tokenization-free fallback (especially useful for Chinese)
 
 
 def compute_iou(pred_event: Tuple[float, float], gt_event: Tuple[float, float]) -> float:
@@ -82,21 +93,26 @@ def pairs_for_threshold(
 
 
 def compute_text_metrics(predictions: List[str], references: List[str]) -> Dict[str, float]:
-	# Compute BLEU-4, BLEURT, ROUGE-L, METEOR, CIDEr, Exact Match, using HuggingFace's evaluate package for consistency
-	if len(predictions) == 0:  return {'bleu4': 0.0, 'bleurt': 0.0, 'rougeL': 0.0, 'meteor': 0.0, 'cider': 0.0, 'exact_match': 0.0}
-	bleu_score = bleu.compute(predictions=predictions, references=[[ref] for ref in references])['score']
-	bleurt_score = bleurt.score(candidates=predictions, references=references)
-	bleurt_score = sum(bleurt_score) / max(1, len(bleurt_score))
-	
+	# Compute BLEU-4, BLEURT, ROUGE-L, METEOR, CIDEr (+ CHRF when available) using HuggingFace's evaluate package
+	# Language-aware: sacrebleu tokenization is selected from TGT_LANG (config); BLEURT/ROUGE/METEOR/CIDEr operate on
+	# untokenized strings. For Chinese, ROUGE/METEOR work on chars by default; CHRF and BLEU(zh) carry the most signal.
+	if len(predictions) == 0: return {'bleu4': 0.0, 'bleurt': 0.0, 'rougeL': 0.0, 'meteor': 0.0, 'cider': 0.0, 'chrf': 0.0}
+	bleu_score = bleu.compute(
+		predictions=predictions,
+		references=[[ref] for ref in references],
+		tokenize=SACREBLEU_TOKENIZE,
+	)['score']
+	bleurt_scores = bleurt.score(candidates=predictions, references=references)
+	bleurt_score = sum(bleurt_scores) / max(1, len(bleurt_scores))
 	rouge_score = rouge.compute(predictions=predictions, references=references)['rougeL']
 	cider_score = cider.compute(predictions=predictions, references=[[ref] for ref in references])['CIDEr']
 	meteor_score = meteor.compute(predictions=predictions, references=references)['meteor']
-	# exact_match = sum(p == g for p, g in zip(predictions, references)) / max(1, len(references))
+	chrf_score = chrf.compute(predictions=predictions, references=[[ref] for ref in references])['score']
 	return {
 		'bleu4': float(bleu_score),    # SacreBLEU returns corpus BLEU (%) across n-gram up to 4 by default,
 		'bleurt': float(bleurt_score), # Roughly between 0 and 1 (sometimes less than 0, sometimes more than 1)
 		'rougeL': float(rouge_score),  
 		'meteor': float(meteor_score), 
 		'cider': float(cider_score),   # https://github.com/huggingface/evaluate/pull/613/files
-		# 'exact_match': float(exact_match),
+		'chrf': float(chrf_score),
 	}
