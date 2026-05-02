@@ -14,7 +14,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 import numpy as np
 from einops import repeat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Dict, Any
 from transformers import MBartConfig, MBartForConditionalGeneration
 from transformers.models.mbart.modeling_mbart import shift_tokens_right
@@ -24,6 +24,7 @@ import types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backbones.cosign import CoSign1s
+from config import TRIMMED_MBART_DIR
 
 
 # ======================== Configuration Dataclass ========================
@@ -34,7 +35,7 @@ class GFSLTConfig:
     hidden_size: int = 1024
     temporal_kernel: int = 3
     logit_scale_init: float = 0.07
-    mbart_name: str = './captioners/trimmed_mbart'
+    mbart_name: str = field(default_factory=lambda: f'./{TRIMMED_MBART_DIR}')
     label_smoothing: float = 0.2
     
     # Pose input dimensions (from config.py)

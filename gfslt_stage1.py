@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gfslt_models import GFSLTConfig, SLRCLIP, TextDecoder, Wrapper4Trainer
 from loader import DVCDataset, trainer_collate_fn
+from config import TGT_LANG, TRIMMED_MBART_DIR
 
 def is_bfloat16_supported(): # Checks if the current device supports bfloat16
     return torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
@@ -25,7 +26,7 @@ class ModelArguments:
     embed_dim: int = field(default=1024, metadata={'help': 'Embedding dimension'})
     hidden_size: int = field(default=1024, metadata={'help': 'Hidden size'})
     temporal_kernel: int = field(default=3, metadata={'help': 'Temporal kernel size for CoSign'})
-    mbart_name: str = field(default='./captioners/trimmed_mbart', metadata={'help': 'MBart model name'})
+    mbart_name: str = field(default_factory=lambda: f'./{TRIMMED_MBART_DIR}', metadata={'help': 'MBart model name'})
     label_smoothing: float = field(default=0.2, metadata={'help': 'Label smoothing'})
     use_text_decoder: bool = field(default=True, metadata={'help': 'Whether to use text decoder for MLM'})
     mlm_loss_weight: float = field(default=1.0, metadata={'help': 'Weight for masked LM loss'})
@@ -131,7 +132,7 @@ class Stage1Trainer(Trainer): # Handles CLIP-style contrastive loss + optional m
 
 # ======================== Main Training Function ========================
 def train_stage1(model_args: ModelArguments, data_args: DataArguments, training_args: CustomTrainingArguments,):
-    tokenizer = AutoTokenizer.from_pretrained(model_args.mbart_name, src_lang='en_XX', tgt_lang='en_XX')
+    tokenizer = AutoTokenizer.from_pretrained(model_args.mbart_name, src_lang=TGT_LANG, tgt_lang=TGT_LANG)
     train_dataset = DVCDataset(
         split='train', tokenizer=tokenizer, max_tries=data_args.max_tries, noise_rate=data_args.noise_rate, pose_augment=data_args.pose_augment, 
         min_events=data_args.min_events, max_events=data_args.max_events, max_window_tokens=data_args.max_window_tokens, 

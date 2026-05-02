@@ -13,18 +13,11 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from gfslt_models import GFSLTConfig, GFSLT, Wrapper4Trainer
+
+from config import TGT_LANG, TRIMMED_MBART_DIR
 from loader import DVCDataset, trainer_collate_fn
-
-import evaluate
-from bleurt.score import BleurtScorer
-from config import BLEURT_CHECKPOINT_PATH
-
-bleu = evaluate.load('sacrebleu') # Range: 0-100
-bleurt = BleurtScorer(BLEURT_CHECKPOINT_PATH)
-rouge = evaluate.load('rouge')
-meteor = evaluate.load('meteor')
-cider = evaluate.load('Kamichanw/CIDEr')
+from evaluation.helpers import compute_text_metrics
+from gfslt_models import GFSLTConfig, GFSLT, Wrapper4Trainer
 
 def is_bfloat16_supported(): # Checks if the current device supports bfloat16
     return torch.cuda.is_available() and torch.cuda.get_device_capability(0)[0] >= 8
@@ -35,7 +28,7 @@ class ModelArguments:
     embed_dim: int = field(default=1024, metadata={'help': 'Embedding dimension'})
     hidden_size: int = field(default=1024, metadata={'help': 'Hidden size'})
     temporal_kernel: int = field(default=3, metadata={'help': 'Temporal kernel size for CoSign'})
-    mbart_name: str = field(default='./captioners/trimmed_mbart', metadata={'help': 'MBart model name'})
+    mbart_name: str = field(default_factory=lambda: f'./{TRIMMED_MBART_DIR}', metadata={'help': 'MBart model name'})
     label_smoothing: float = field(default=0.2, metadata={'help': 'Label smoothing'})
     stage1_checkpoint: Optional[str] = field(
         default=None, 
@@ -142,7 +135,7 @@ class Stage2Trainer(Trainer):
                         pixel_mask=pixel_mask,
                         max_new_tokens=self.generation_args.max_new_tokens,
                         num_beams=self.generation_args.num_beams,
-                        decoder_start_token_id=self.trimmed_tokenizer.lang_code_to_id.get('en_XX', self.trimmed_tokenizer.bos_token_id),
+                        decoder_start_token_id=self.trimmed_tokenizer.lang_code_to_id.get(TGT_LANG, self.trimmed_tokenizer.bos_token_id),
                     )
                     pred_texts = self.trimmed_tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
                     predictions.extend(pred_texts)
@@ -151,31 +144,12 @@ class Stage2Trainer(Trainer):
                         ref_text = self.trimmed_tokenizer.decode(l['paragraph_tokens'], skip_special_tokens=True)
                         references.append(ref_text)
             
-            text_metrics = self.compute_text_metrics(predictions, references)
+            text_metrics = xcompute_text_metrics(predictions, references)
             for k, v in text_metrics.items():
                 metrics[f'{metric_key_prefix}_para_{k}'] = v
         return metrics
     
     
-    def compute_text_metrics(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
-        # Compute BLEU-4, BLEURT, ROUGE-L, METEOR, CIDEr, using HuggingFace's evaluate package for consistency
-        if len(predictions) == 0:  return {'bleu4': 0.0, 'bleurt': 0.0, 'rougeL': 0.0, 'meteor': 0.0, 'cider': 0.0, 'exact_match': 0.0}
-        bleu_score = bleu.compute(predictions=predictions, references=[[ref] for ref in references])['score']
-        bleurt_score = bleurt.score(candidates=predictions, references=references)
-        bleurt_score = sum(bleurt_score) / max(1, len(bleurt_score))
-
-        rouge_score = rouge.compute(predictions=predictions, references=references)['rougeL']
-        cider_score = cider.compute(predictions=predictions, references=[[ref] for ref in references])['CIDEr']
-        meteor_score = meteor.compute(predictions=predictions, references=references)['meteor']
-        return {
-            'bleu4': float(bleu_score),    # SacreBLEU returns corpus BLEU (%) across n-gram up to 4 by default,
-            'bleurt': float(bleurt_score), # Roughly between 0 and 1 (sometimes less than 0, sometimes more than 1)
-            'rougeL': float(rouge_score),  
-            'meteor': float(meteor_score), 
-            'cider': float(cider_score),   # https://github.com/huggingface/evaluate/pull/613/files
-        }
-
-
 # ======================== Weight Loading Utilities ========================
 def load_stage1_weights(model: GFSLT, checkpoint_path: str) -> GFSLT:
     ''' Load encoder weights from Stage 1 checkpoint.
@@ -222,7 +196,7 @@ def load_stage1_weights(model: GFSLT, checkpoint_path: str) -> GFSLT:
 
 # ======================== Main Training Function ========================
 def train_stage2(model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments, generation_args: GenerationArguments):
-    tokenizer = AutoTokenizer.from_pretrained(model_args.mbart_name, src_lang='en_XX', tgt_lang='en_XX')
+    tokenizer = AutoTokenizer.from_pretrained(model_args.mbart_name, src_lang=TGT_LANG, tgt_lang=TGT_LANG)
     train_dataset = DVCDataset(
         split='train', tokenizer=tokenizer, max_tries=data_args.max_tries, noise_rate=data_args.noise_rate, pose_augment=data_args.pose_augment, 
         min_events=data_args.min_events, max_events=data_args.max_events, max_window_tokens=data_args.max_window_tokens, 

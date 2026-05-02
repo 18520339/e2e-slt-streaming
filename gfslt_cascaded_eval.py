@@ -29,6 +29,7 @@ from transformers import AutoTokenizer, DeformableDetrConfig, HfArgumentParser
 from loader import DVCDataset, collate_fn
 from captioners import MBartDecoderCaptioner
 from pdvc import DeformableDetrForObjectDetection
+from config import TGT_LANG, TRIMMED_TOKENIZER_DIR, TRIMMED_MBART_DIR
 from postprocess import post_process_object_detection
 
 from gfslt_models import GFSLT, GFSLTConfig
@@ -59,7 +60,7 @@ class ModelArguments: # Arguments for model configuration (matched to training c
     gfslt_embed_dim: int = field(default=1024)
     gfslt_hidden_size: int = field(default=1024)
     gfslt_temporal_kernel: int = field(default=3)
-    gfslt_mbart_name: str = field(default='./captioners/trimmed_mbart')
+    gfslt_mbart_name: str = field(default_factory=lambda: f'./{TRIMMED_MBART_DIR}')
 
 
 @dataclass
@@ -293,7 +294,7 @@ class MultiStageEvaluator:
         encoder_outputs = self.gfslt_model.mbart.model.encoder(inputs_embeds=inputs_embeds, attention_mask=attention_mask, return_dict=True)
         
         # Initialize decoder inputs for all samples
-        decoder_start_id = self.gfslt_tokenizer.lang_code_to_id.get('en_XX', self.gfslt_tokenizer.bos_token_id)
+        decoder_start_id = self.gfslt_tokenizer.lang_code_to_id.get(TGT_LANG, self.gfslt_tokenizer.bos_token_id)
         decoder_input_ids = torch.full((batch_size, 1), decoder_start_id, dtype=torch.long, device=self.device)
         
         # Track which samples are still generating
@@ -529,7 +530,7 @@ def load_detr_model(model_args: ModelArguments, data_args: DataArguments, checkp
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
-        decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
+        decoder_start_token_id=tokenizer.lang_code_to_id[TGT_LANG],
         num_cap_layers=model_args.num_cap_layers,
         cap_dropout_rate=model_args.cap_dropout_rate,
         max_event_tokens=data_args.max_event_tokens,
@@ -612,8 +613,8 @@ def main():
     print(f"Using device: {device}")
     
     # Load tokenizers
-    detr_tokenizer = AutoTokenizer.from_pretrained('./captioners/trimmed_tokenizer')
-    gfslt_tokenizer = AutoTokenizer.from_pretrained('./captioners/trimmed_tokenizer')
+    detr_tokenizer = AutoTokenizer.from_pretrained(f'./{TRIMMED_TOKENIZER_DIR}')
+    gfslt_tokenizer = AutoTokenizer.from_pretrained(f'./{TRIMMED_TOKENIZER_DIR}')
     
     # Load models
     detr_model = load_detr_model(model_args, data_args, eval_args.detr_checkpoint_path, detr_tokenizer, device)
