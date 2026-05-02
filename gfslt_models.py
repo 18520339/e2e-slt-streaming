@@ -34,7 +34,7 @@ class GFSLTConfig:
     hidden_size: int = 1024
     temporal_kernel: int = 3
     logit_scale_init: float = 0.07
-    mbart_name: str = './trimmed_mbart'
+    mbart_name: str = './captioners/trimmed_mbart'
     label_smoothing: float = 0.2
     
     # Pose input dimensions (from config.py)

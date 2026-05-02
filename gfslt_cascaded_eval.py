@@ -1,5 +1,4 @@
-'''
-Multi-Stage Evaluation Pipeline: Deformable DETR + GFSLT
+''' Multi-Stage Evaluation Pipeline: Deformable DETR + GFSLT
 
 This script evaluates a two-stage approach:
 1. Stage 1: Use Deformable DETR for temporal event localization
@@ -10,11 +9,10 @@ The pipeline computes:
 - Captioning metrics: BLEU-4, BLEURT, ROUGE-L, METEOR, CIDEr for matched pred-GT pairs
 - Comparison between GFSLT (multi-stage) and DETR captioner (single-stage)
 
-Usage:
-    python multistage_eval.py \
-        --detr_checkpoint_path checkpoints/detr/pytorch_model.bin \
-        --gfslt_checkpoint_path checkpoints/gfslt/pytorch_model.bin \
-        --eval_test
+> python multistage_eval.py \
+    --detr_checkpoint_path checkpoints/detr/pytorch_model.bin \
+    --gfslt_checkpoint_path checkpoints/gfslt/pytorch_model.bin \
+    --eval_test
 '''
 import gc, os, json
 import numpy as np
