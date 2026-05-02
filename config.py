@@ -9,7 +9,7 @@ except ImportError:
 # -- Project Paths ----------------------------------------------------------
 # NOTE: Please update these paths to match your local machine's setup.
 PROJECT_ROOT = Path(__file__).parent
-DATA_ROOT = Path('dataset/BOBSL') # TO BE FILLED BY USER
+DATA_ROOT = Path('data/BOBSL') # TO BE FILLED BY USER
 POSE_ROOT = DATA_ROOT / 'bobsl_dwpose'  # Directory with pose .npy files
 CHECKPOINT_DIR = PROJECT_ROOT / 'checkpoints'
 OUTPUT_DIR = PROJECT_ROOT / 'outputs'

@@ -25,9 +25,9 @@ def precision_recall_at_tiou(
 	gt_events: List[Tuple[float, float]],
 	tiou: float,
 ) -> Tuple[Optional[float], Optional[float]]:
-	''' Compute precision and recall at tiou for a single window:
-	- Precision = fraction of predictions that overlap any GT with IoU >= tiou.
-	- Recall    = fraction of GT covered by any prediction with IoU >= tiou.
+	''' Compute precision and recall at tIoU for a single window:
+	- Precision = fraction of predictions that overlap any GT with IoU >= tIoU.
+	- Recall    = fraction of GT covered by any prediction with IoU >= tIoU.
 
 	Edge cases policy (to avoid inflated scores):
 	- If both predictions and GT are empty: return (None, None) so caller can skip this window.
@@ -38,15 +38,10 @@ def precision_recall_at_tiou(
 	if len(pred_events) == 0 and len(gt_events) > 0: return 0.0, 0.0
 	if len(pred_events) > 0 and len(gt_events) == 0: return 0.0, 0.0
 
-	pred_covered, gt_covered = 0, 0
-	for p in pred_events: # Pred coverage
-		if any(compute_iou(p, g) >= tiou for g in gt_events):
-			pred_covered += 1
+	pred_covered = sum(1 for p in pred_events if any(compute_iou(p, g) >= tiou for g in gt_events))
+	gt_covered = sum(1 for g in gt_events if any(compute_iou(p, g) >= tiou for p in pred_events))
+
 	precision = pred_covered / len(pred_events)
-	
-	for g in gt_events: # GT coverage
-		if any(compute_iou(p, g) >= tiou for p in pred_events):
-			gt_covered += 1
 	recall = gt_covered / len(gt_events)
 	return precision, recall
 
@@ -58,9 +53,9 @@ def pairs_for_threshold(
 	gt_captions: List[str],
 	tiou: float,
 ) -> Tuple[List[str], List[List[str]]]:
-	''' Create matched pairs at a tiou threshold following ActivityNet logic.
+	''' Create matched pairs at a tIoU threshold following ActivityNet logic.
 
-	- For each prediction, add one pair per GT whose IoU >= tiou.
+	- For each prediction, add one pair per GT whose IoU >= tIoU.
 	- If a prediction matches no GT, pair it with a random garbage string.
 
 	Returns predictions, references where references is a list of single-item lists
@@ -72,8 +67,8 @@ def pairs_for_threshold(
 		matched = False
 		for j, g_span in enumerate(gt_events):
 			if compute_iou(p_span, g_span) >= tiou:
-				preds.append(pred_captions[i].lower())
-				refs.append(gt_captions[j].lower())
+				preds.append(pred_captions[i].lower() if i < len(pred_captions) else '') # Defensive: if captions missing, use empty string
+				refs.append(gt_captions[j].lower() if j < len(gt_captions) else '') # Defensive: if captions missing, use empty string
 				matched = True
     
 		# if not matched:
