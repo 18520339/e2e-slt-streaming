@@ -14,6 +14,7 @@ from loader import DVCDataset, trainer_collate_fn, get_loader
 from pdvc import DeformableDetrForObjectDetection
 from captioners import MBartDecoderCaptioner
 from evaluation import preprocess_logits_for_metrics, compute_metrics
+from config import TGT_LANG, TRIMMED_TOKENIZER_DIR
 from test import debug_variance, debug_encoder_layers, debug_query_variance
 from config import *
 
@@ -86,7 +87,7 @@ def main():
     print(f'Loading checkpoint from: {eval_args.checkpoint_path}')
 
     # Model Setup 
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained(TRIMMED_TOKENIZER_DIR)
     config = DeformableDetrConfig(
         d_model=model_args.d_model,
         encoder_layers=model_args.encoder_layers,
@@ -113,7 +114,7 @@ def main():
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
-        decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
+        decoder_start_token_id=tokenizer.lang_code_to_id[TGT_LANG],
         num_cap_layers=model_args.num_cap_layers,
         cap_dropout_rate=model_args.cap_dropout_rate,
         max_event_tokens=data_args.max_event_tokens,

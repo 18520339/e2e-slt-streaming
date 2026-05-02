@@ -148,7 +148,7 @@ def main():
             print('Warning: Directly use GT boxes for captioning, so all losses except caption loss will be disabled. Only use this for ablation studies.')
     
     # Data Loading
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained(TRIMMED_TOKENIZER_DIR)
     train_dataset = DVCDataset(
         split='train', tokenizer=tokenizer, max_tries=data_args.max_tries, noise_rate=data_args.noise_rate, pose_augment=data_args.pose_augment, 
         min_events=data_args.min_events, max_events=data_args.max_events, max_window_tokens=data_args.max_window_tokens, 
@@ -212,7 +212,7 @@ def main():
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
-        decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
+        decoder_start_token_id=tokenizer.lang_code_to_id[TGT_LANG],
         num_cap_layers=model_args.num_cap_layers,
         cap_dropout_rate=model_args.cap_dropout_rate,
         max_event_tokens=data_args.max_event_tokens,

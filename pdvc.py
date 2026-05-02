@@ -14,6 +14,7 @@ from transformers.models.deformable_detr.modeling_deformable_detr import (
 )
 from deformable_detr import DeformableDetrModel
 from captioners import LSTMCaptioner, MBartDecoderCaptioner
+from config import TGT_LANG, TRIMMED_TOKENIZER_DIR
 from loss import DeformableDetrHungarianMatcher, DeformableDetrForObjectDetectionLoss, ContrastiveLoss
 from utils import ensure_cw_format
 from test import debug_variance
@@ -345,7 +346,7 @@ if __name__ == '__main__':
     # Fetch 1 batch from Data loader
     max_events, max_event_tokens = 10, 12
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    tokenizer = AutoTokenizer.from_pretrained('captioners/trimmed_tokenizer')
+    tokenizer = AutoTokenizer.from_pretrained(TRIMMED_TOKENIZER_DIR)
     if tokenizer.mask_token is None: tokenizer.add_special_tokens({'mask_token': '[MASK]'})
     
     train_loader = get_loader(split='train', tokenizer=tokenizer, batch_size=4, max_events=max_events, max_event_tokens=max_event_tokens)
@@ -390,7 +391,7 @@ if __name__ == '__main__':
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
-        decoder_start_token_id=tokenizer.lang_code_to_id['en_XX'],
+        decoder_start_token_id=tokenizer.lang_code_to_id[TGT_LANG],
         num_cap_layers=3,
         cap_dropout_rate=0.1,
         max_event_tokens=max_event_tokens,

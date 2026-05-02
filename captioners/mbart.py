@@ -5,6 +5,11 @@ from typing import Optional
 from transformers import DeformableDetrConfig, MBartConfig, MBartForCausalLM
 from transformers.models.mbart.modeling_mbart import shift_tokens_right
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from config import TRIMMED_MBART_DIR
+
 
 class MBartDecoderCaptioner(nn.Module):
     ''' mBart Decoder-based Captioner, inspired by GFSLT-VLP: https://github.com/zhoubenjia/GFSLT-VLP
@@ -45,7 +50,7 @@ class MBartDecoderCaptioner(nn.Module):
             forced_eos_token_id=eos_token_id,
             scale_embedding=True,
         )
-        self.mbart_decoder = MBartForCausalLM.from_pretrained('captioners/trimmed_mbart', config=self.mbart_config, ignore_mismatched_sizes=True)
+        self.mbart_decoder = MBartForCausalLM.from_pretrained(TRIMMED_MBART_DIR, config=self.mbart_config, ignore_mismatched_sizes=True)
         
         # Cross-attention projection: project concatenated visual and query features to match decoder's expected encoder hidden states
         # We concatenate visual features (from transformer_outputs) with query embeddings for richer representation
