@@ -34,7 +34,7 @@ from postprocess import post_process_object_detection
 
 from gfslt_models import GFSLT, GFSLTConfig
 from config import WINDOW_DURATION_SECONDS, FPS
-from evaluation.helpers import precision_recall_at_tiou, pairs_for_threshold, compute_text_metrics
+from evaluation.helpers import compute_iou, precision_recall_at_tiou, pairs_for_threshold, compute_text_metrics
 from utils import cw_to_se
 
 
@@ -88,7 +88,7 @@ class EvalArguments: # Arguments for evaluation
     gfslt_num_beams: int = field(default=1)
     skip_gfslt: bool = field(default=False, metadata={'help': 'Skip GFSLT captioning for fast localization-only eval'})
     max_events_per_window: int = field(default=3, metadata={'help': 'Max events per window to caption (for speed)'})
-    use_fp16: bool = field(default=True, metadata={'help': 'Use FP16 for faster inference'})
+    use_fp16: bool = field(default=False, metadata={'help': 'Use FP16 for faster inference'})
 
 
 # ======================== Padding Utility ========================
@@ -231,8 +231,8 @@ class MultiStageEvaluator:
                 'event_scores': event_scores_selected,
                 'detr_captions': detr_captions_selected,
             })
-        
         return batch_results
+    
     
     @torch.no_grad()
     def caption_events_with_gfslt(self, poses: torch.Tensor, events: List[Tuple[int, int]]) -> List[str]:
@@ -260,9 +260,7 @@ class MultiStageEvaluator:
             valid_indices.append(idx)
         
         if not batch_poses: return [''] * len(events)
-        
-        # Stack into batch: (N, T, K, C)
-        pixel_values = torch.stack(batch_poses, dim=0).to(self.device)
+        pixel_values = torch.stack(batch_poses, dim=0).to(self.device) # Stack into batch: (N, T, K, C)
         pixel_mask = torch.ones(len(batch_poses), self.window_size, dtype=torch.bool, device=self.device)
         
         # Generate captions for all events in batch
@@ -579,7 +577,8 @@ def load_gfslt_model(model_args: ModelArguments, checkpoint_path: str, device: t
                 new_state_dict[new_k] = v
             else: new_state_dict[k] = v
         
-        if len(new_state_dict) != len(state_dict): print(f"  Remapped {len(state_dict) - len(new_state_dict)} keys with 'base_module.' prefix")
+        if len(new_state_dict) != len(state_dict): 
+            print(f"  Remapped {len(state_dict) - len(new_state_dict)} keys with 'base_module.' prefix")
         state_dict = new_state_dict
         
         # Filter out incompatible keys

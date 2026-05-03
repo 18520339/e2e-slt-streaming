@@ -7,12 +7,11 @@ from dataclasses import dataclass, field
 
 from transformers import (
     AutoTokenizer, DeformableDetrConfig,
-    HfArgumentParser, TrainingArguments, 
-    Trainer,
+    HfArgumentParser, TrainingArguments, Trainer
 )
 from loader import DVCDataset, trainer_collate_fn, get_loader
 from pdvc import DeformableDetrForObjectDetection
-from captioners import MBartDecoderCaptioner
+from captioners import LSTMCaptioner, MBartDecoderCaptioner
 from evaluation import preprocess_logits_for_metrics, compute_metrics
 from config import TGT_LANG, TRIMMED_TOKENIZER_DIR
 from test import debug_variance, debug_encoder_layers, debug_query_variance
