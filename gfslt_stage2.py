@@ -2,6 +2,7 @@
 # This stage performs end-to-end translation from pose sequences to text, using weights from Stage 1 (VLP) to initialize the encoder.
 import torch
 import torch.nn as nn
+from safetensors.torch import load_file
 from transformers import Trainer, TrainingArguments, AutoTokenizer, HfArgumentParser
 
 import numpy as np
@@ -14,7 +15,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from config import TGT_LANG, TRIMMED_MBART_DIR
+from config import TGT_LANG, TRIMMED_TOKENIZER_DIR, TRIMMED_MBART_DIR
 from loader import DVCDataset, trainer_collate_fn
 from evaluation.helpers import compute_text_metrics
 from gfslt_models import GFSLTConfig, GFSLT, Wrapper4Trainer
@@ -29,6 +30,7 @@ class ModelArguments:
     hidden_size: int = field(default=1024, metadata={'help': 'Hidden size'})
     temporal_kernel: int = field(default=3, metadata={'help': 'Temporal kernel size for CoSign'})
     mbart_name: str = field(default_factory=lambda: f'./{TRIMMED_MBART_DIR}', metadata={'help': 'MBart model name'})
+    tokenizer_name: str = field(default_factory=lambda: f'./{TRIMMED_TOKENIZER_DIR}', metadata={'help': 'Tokenizer name'})
     label_smoothing: float = field(default=0.2, metadata={'help': 'Label smoothing'})
     stage1_checkpoint: Optional[str] = field(
         default=None, 
@@ -144,7 +146,7 @@ class Stage2Trainer(Trainer):
                         ref_text = self.trimmed_tokenizer.decode(l['paragraph_tokens'], skip_special_tokens=True)
                         references.append(ref_text)
             
-            text_metrics = xcompute_text_metrics(predictions, references)
+            text_metrics = compute_text_metrics(predictions, references)
             for k, v in text_metrics.items():
                 metrics[f'{metric_key_prefix}_para_{k}'] = v
         return metrics
@@ -178,8 +180,8 @@ def load_stage1_weights(model: GFSLT, checkpoint_path: str) -> GFSLT:
             new_state_dict[new_k] = v
     
     # Load MBart decoder weights from pretrained
-    mbart_state = torch.load(
-        f'{model.config.mbart_name}/model.safetensors', map_location='cpu'
+    mbart_state = load_file(
+        f'{model.config.mbart_name}/model.safetensors'
     ) if Path(f'{model.config.mbart_name}/model.safetensors').exists() else {}
     
     for k, v in mbart_state.items():
@@ -196,7 +198,7 @@ def load_stage1_weights(model: GFSLT, checkpoint_path: str) -> GFSLT:
 
 # ======================== Main Training Function ========================
 def train_stage2(model_args: ModelArguments, data_args: DataArguments, training_args: TrainingArguments, generation_args: GenerationArguments):
-    tokenizer = AutoTokenizer.from_pretrained(model_args.mbart_name, src_lang=TGT_LANG, tgt_lang=TGT_LANG)
+    tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, src_lang=TGT_LANG, tgt_lang=TGT_LANG)
     train_dataset = DVCDataset(
         split='train', tokenizer=tokenizer, max_tries=data_args.max_tries, noise_rate=data_args.noise_rate, pose_augment=data_args.pose_augment, 
         min_events=data_args.min_events, max_events=data_args.max_events, max_window_tokens=data_args.max_window_tokens, 
