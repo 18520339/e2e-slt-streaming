@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
+from safetensors.torch import load_file
 
 import numpy as np
 from einops import repeat
@@ -25,6 +26,33 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backbones.cosign import CoSign1s
 from config import TRIMMED_MBART_DIR
+
+
+def load_gfslt_mbart(model_path: str) -> MBartForConditionalGeneration:
+    '''Load MBartForConditionalGeneration robustly from a trimmed checkpoint.
+    The trimmed checkpoint was saved as MBartForCausalLM (decoder-only), so loading directly with from_pretrained 
+    leaves model.shared.weight on meta device due to weight-tying resolution issues. This function creates the 
+    model from config (fully materialized on CPU) then loads available weights.
+    '''
+    config = MBartConfig.from_pretrained(model_path)
+    config.is_encoder_decoder = True
+    config.is_decoder = False
+    config.decoder_attention_heads = 8
+    config.encoder_attention_heads = 8
+    config.decoder_layers = 3
+    config.encoder_layers = 3
+    config.num_hidden_layers = 3
+    
+    model = MBartForConditionalGeneration(config)
+    safetensors_path = Path(model_path) / 'model.safetensors'
+    if safetensors_path.exists(): state_dict = load_file(str(safetensors_path))
+    else: state_dict = torch.load(Path(model_path) / 'pytorch_model.bin', map_location='cpu', weights_only=True)
+    
+    # Copy decoder embed_tokens to model.shared (the tied embedding)
+    if 'model.decoder.embed_tokens.weight' in state_dict and 'model.shared.weight' not in state_dict:
+        state_dict['model.shared.weight'] = state_dict['model.decoder.embed_tokens.weight']
+    model.load_state_dict(state_dict, strict=False)
+    return model
 
 
 # ======================== Configuration Dataclass ========================
@@ -123,7 +151,7 @@ class TextCLIP(nn.Module): # Text encoder for CLIP-style contrastive learning us
         super().__init__()
         self.config = config
         mbart_config = MBartConfig.from_pretrained(config.mbart_name)
-        self.backbone = MBartForConditionalGeneration.from_pretrained(config.mbart_name).get_encoder()
+        self.backbone = load_gfslt_mbart(config.mbart_name).get_encoder()
         self.lm_head = nn.Linear(mbart_config.d_model, config.embed_dim, bias=False) if head_type == 'linear' else nn.Identity()
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -151,7 +179,7 @@ class ImageCLIP(nn.Module): # Pose encoder for CLIP-style contrastive learning u
         self.config = config
         mbart_config = MBartConfig.from_pretrained(config.mbart_name)
         self.backbone = PoseFeatureExtractor(config, use_temporal_conv=True)
-        self.trans_encoder = MBartForConditionalGeneration.from_pretrained(config.mbart_name).get_encoder()
+        self.trans_encoder = load_gfslt_mbart(config.mbart_name).get_encoder()
         self.cls_token = nn.Parameter(torch.randn(1, 1, config.embed_dim)) # CLS token for aggregation
         self.lm_head = nn.Linear(mbart_config.d_model, config.embed_dim, bias=False) if head_type == 'linear' else nn.Identity()
         self.proj = nn.Linear(config.embed_dim, mbart_config.d_model) if config.embed_dim != mbart_config.d_model else nn.Identity()
@@ -264,11 +292,11 @@ class TextDecoder(nn.Module):
         super().__init__()
         self.config = config
         mbart_config = MBartConfig.from_pretrained(config.mbart_name)
-        mbart = MBartForConditionalGeneration.from_pretrained(config.mbart_name)
+        mbart = load_gfslt_mbart(config.mbart_name)
         
         self.text_decoder = mbart.get_decoder()
         self.lm_head = mbart.get_output_embeddings()
-        self.register_buffer('final_logits_bias', torch.zeros((1, mbart.model.shared.num_embeddings)))
+        self.register_buffer('final_logits_bias', torch.zeros((1, mbart_config.vocab_size)))
         
         self.pad_token_id = mbart_config.pad_token_id
         self.mbart_config = mbart_config
@@ -332,7 +360,7 @@ class GFSLT(nn.Module):
         super().__init__()
         self.config = config
         self.backbone = PoseFeatureExtractor(config, use_temporal_conv=True) # Pose feature extraction
-        self.mbart = MBartForConditionalGeneration.from_pretrained(config.mbart_name) # MBart for translation
+        self.mbart = load_gfslt_mbart(config.mbart_name) # MBart for translation
         self.sign_emb = VisualEncoder(emb_size=self.mbart.config.d_model, feature_size=config.embed_dim) # Visual encoder projection
         self.embed_scale = 1.0
 
