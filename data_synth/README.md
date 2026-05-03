@@ -34,24 +34,24 @@ Switch dataset via the `DATASET` env var: `BOBSL` (default) | `PHOENIX` | `CSL`.
 Each input dataset is a pickle that maps a clip identifier to one isolated, sentence-aligned record:
 
 ```
-clip_record := {
+clip_record  := {
   keypoint   : float32 (T, 133, 3)     # COCO-WholeBody-133, NATIVE pixel coordinates
-  text       : str                      # German subtitle (PHOENIX) | Chinese subtitle (CSL)
-  num_frames : int                      # = T at the source frame rate
-  name       : str                      # canonical clip identifier (encodes signer ID)
+  text       : str                     # German subtitle (PHOENIX) | Chinese subtitle (CSL)
+  num_frames : int                     # = T at the source frame rate
+  name       : str                     # canonical clip identifier (encodes signer ID)
 }
 ```
 
-The downstream streaming model expects an **untrimmed** pose stream that contains multiple sentences interleaved with non-signing background. Naive concatenation of these isolated clips introduces several artefacts that an event-localization head learns to exploit instead of learning real sign-content boundaries:
+The downstream streaming model expects an **untrimmed** pose stream that contains multiple sentences interleaved with non-signing background. Naive concatenation of these isolated clips introduces several artifacts that an event-localization head learns to exploit instead of learning real sign-content boundaries:
 
-| Artefact | Cause | Trivial cue model can latch onto |
+| Artifact | Cause | Trivial cue model can latch onto |
 |---|---|---|
-| Hands-down → pause → hands-up at every join | Each clip recorded in isolation: signer rests before / after every utterance | Boundary = neutral-pose detector |
+| Hands-down → pause → hands-up at every join | Each clip recorded in isolation: signer rests before/after every utterance | Boundary = neutral-pose detector |
 | Long pause between every pair of clips | Naive synth inserts a sampled pause between every clip | Pause length = localization signal |
 | Frozen BG_pre / BG_post | Held first/last frame as background | BG = "no motion" Boolean |
 | Discontinuous velocity at the seam | Last frame of A and first of B chosen independently | C0 discontinuity in keypoint trajectory |
 
-The algorithm below removes all four artefacts. Each rule is **either pure geometry or sampled directly from BOBSL manual annotations** — no parametric fits, no synth-specific tunables, no learned components.
+The algorithm below removes all 4 artifacts. Each rule is **either pure geometry or sampled directly from BOBSL manual annotations**.
 
 ---
 
@@ -63,11 +63,11 @@ Concretely, a stream $S$ has the schematic structure
 
 ```
 S  =  [ B_pre ][ c_1 ][ Δ_1 ][ c_2 ][ Δ_2 ] ... [ c_K ][ B_post ]
-       \_____/ \___/ \___/ \___/ \___/      \___/ \______/
-        BG     clip  bridge clip  bridge     clip   BG
+       \_____/  \___/  \___/  \___/  \___/       \___/  \______/
+         BG      clip  bridge  clip  bridge       clip     BG
 ```
 
-where each $c_k$ is a real signer-pose clip from the offline pickle (after rest-trimming, §4.4) and each connector $\Delta_k, B_\text{pre}, B_\text{post}$ is a Hermite-interpolated bridge whose duration is sampled directly from the empirical BOBSL inter-subtitle gap distribution. Most $\Delta_k$ collapse to a 2-frame "movement-epenthesis" transition because BOBSL's empirical gap distribution puts $\approx 74\%$ of its mass at zero — i.e. real broadcast signing concatenates sentences co-articulated, not separated by neutral rest.
+where each $c_k$ is a real signer-pose clip from the offline pickle (after rest-trimming, §4.4) and each connector $\Delta_k, B_\text{pre}, B_\text{post}$ is a Hermite-interpolated bridge whose duration is sampled directly from the empirical BOBSL inter-subtitle gap distribution. Most $\Delta_k$ collapse to a 2-frame "movement-epenthesis" transition because BOBSL's empirical gap distribution puts ~74% of its mass at zero — i.e. real broadcast signing concatenates sentences co-articulated, not separated by neutral rest.
 
 ---
 
@@ -75,16 +75,16 @@ where each $c_k$ is a real signer-pose clip from the offline pickle (after rest-
 
 | Symbol | Definition | Source / value |
 |---|---|---|
-| $C$ | Pose clip pool, $C = \{c_i = (P_i, t_i, s_i, n_i)\}$ | Input pickle |
+| $C$ | Pose clip pool, $C = \\{c_i = (P_i, t_i, s_i, n_i)\\}$ | Input pickle |
 | $P_i \in \mathbb{R}^{T_i \times 133 \times 3}$ | Keypoint tensor for clip $i$ — $T_i$ frames, 133 joints, $(x, y, c)$ per joint | clip_record["keypoint"] |
 | $t_i$ | Subtitle text for clip $i$ | clip_record["text"] |
 | $s_i$ | Signer ID for clip $i$ | parsed from clip_record["name"] (§4.2) |
-| $\mathcal{P}_s$ | Same-signer clip subset, $\mathcal{P}_s = \{c_i \in C : s_i = s\}$ | derived |
+| $\mathcal{P}_s$ | Same-signer clip subset, $\mathcal{P}_s = \\{c_i \in C : s_i = s\\}$ | derived |
 | $f$ | Target frame rate | $12.5$ Hz (matches StreamSLST `config.FPS`) |
 | $W$ | Model training window length | $15$ s (matches StreamSLST `config.WINDOW_DURATION_SECONDS`) |
 | $W_\text{stream}$ | Stream design target window | $4 W = 60$ s (see §4.9) |
 | $G \in \mathbb{R}^{30552}$ | BOBSL empirical inter-subtitle gap array (negatives clipped to 0) | `bobsl_gap_samples.npy` |
-| $G_+ \subset G$ | Positive-only subset of $G$ | $\lvert G_+ \rvert = 7\,997$ |
+| $G_+ \subset G$ | Positive-only subset of $G$ | $\lvert G_+ \rvert = 7,997$ |
 | $K$ | Number of sentence clips per stream | sampled from $[K_\text{lo}, K_\text{hi}]$ |
 | $K_\text{lo}, K_\text{hi}$ | $p_{10}, p_{90}$ of `subs_per_60s_window`(BOBSL) | $[6, 19]$ |
 | $n_\text{min}$ | Numerical floor for the Hermite bridge | $2$ frames (§4.5) |
@@ -100,11 +100,11 @@ This section walks through every step of the synthesis pipeline. Each subsection
 
 A stream is the temporal concatenation of $2K + 1$ segments:
 
-$$S \;=\; B_\text{pre} \,\Vert\, c_1 \,\Vert\, \Delta_1 \,\Vert\, c_2 \,\Vert\, \Delta_2 \,\Vert\, \cdots \,\Vert\, c_K \,\Vert\, B_\text{post}$$
+$$S \ =\  B_\text{pre} \ \Vert\  c_1 \ \Vert\  \Delta_1 \ \Vert\  c_2 \ \Vert\  \Delta_2 \ \Vert\  \cdots \ \Vert\  c_K \ \Vert\  B_\text{post}$$
 
 where $\Vert$ denotes frame-axis concatenation. The **clip segments** $c_k$ contribute the actual subtitle events; the **bridge segments** $\Delta_k$ and the **background segments** $B_\text{pre}, B_\text{post}$ are non-event and contribute only background frames. The cue annotation list is computed deterministically from the segment lengths:
 
-$$A = \Big\{(s_k, e_k, t_k)\Big\}_{k=1..K}, \quad s_k = \frac{1}{f}\Big(\lvert B_\text{pre}\rvert + \sum_{j<k}(\lvert c_j\rvert + \lvert \Delta_j\rvert)\Big), \quad e_k = s_k + \frac{\lvert c_k\rvert}{f}$$
+$$A = \\{(s_k, e_k, t_k)\\}_{k=1..K}, \quad s_k = \frac{1}{f}(\lvert B_\text{pre}\rvert + \sum_{j<k}(\lvert c_j\rvert + \lvert \Delta_j\rvert)), \quad e_k = s_k + \frac{\lvert c_k\rvert}{f}$$
 
 Because $A$ is computed from segment lengths chosen by the synthesizer, the boundaries are **oracle** — exact to the frame.
 
@@ -112,7 +112,7 @@ Because $A$ is computed from segment lengths chosen by the synthesizer, the boun
 
 Before any stream is synthesized, the clip pool is partitioned by signer:
 
-$$\mathcal{P}_s = \{c_i \in C : s_i = s\}, \quad \text{drop pools with } \lvert \mathcal{P}_s \rvert < \rho_\text{min}$$
+$$\mathcal{P}_s = \\{c_i \in C : s_i = s\\}, \quad \text{drop pools with } \lvert \mathcal{P}_s \rvert < \rho_\text{min}$$
 
 A stream draws all of its $K$ clips from a single $\mathcal{P}_s$. Cross-signer concatenation is avoided because it introduces two leakage hazards:
 
@@ -134,23 +134,23 @@ def signer_id(dataset, clip_name):
 
 Source clips arrive at the source dataset's native frame rate ($25$ Hz for PHOENIX, $30$ Hz for CSL). They are resampled to the StreamSLST training rate $f = 12.5$ Hz by per-joint linear interpolation on $(x, y)$ and nearest-neighbour on the confidence channel:
 
-$$P^{(f)}_t \;=\; \text{interp}\big(P^{(f_\text{src})}, t / f, \; t \in 0 .. \lfloor f \cdot T_\text{src} / f_\text{src} \rfloor\big)$$
+$$P^{(f)}_t \ =\  \text{interp}(P^{(f_\text{src})}, t / f, \  t \in 0 .. \lfloor f \cdot T_\text{src} / f_\text{src} \rfloor)$$
 
 Confidence is taken nearest-neighbour rather than averaged because averaging confidences is semantically meaningless (a 50%-confident average of two predictions does not mean "half-confident at the average position").
 
 ## 4.4 `trim_rest` — geometric removal of preparation / retraction
 
-**Why**: each isolated clip begins with a *preparation* phase (signer raises hands from lap to first sign location) and ends with a *retraction* phase (hands fall back to lap). These artefacts are absent in real continuous broadcast signing — signers move directly between adjacent sentences without returning to rest. Concatenating non-trimmed clips creates an obvious "hands-down → long pause → hands-up" boundary that the localization head can latch onto trivially.
+Each isolated clip begins with a *preparation* phase (signer raises hands from lap to first sign location) and ends with a *retraction* phase (hands fall back to lap). These artifacts are absent in real continuous broadcast signing — signers move directly between adjacent sentences without returning to rest. Concatenating non-trimmed clips creates an obvious "hands-down → long pause → hands-up" boundary that the localization head can latch onto trivially.
 
-**Rule (zero hyperparameters)**: a frame is "rest" iff both wrists sit BELOW the shoulder line in image coordinates (where larger $y$ = lower in the image):
+A frame is "rest" if both wrists sit BELOW the shoulder line in image coordinates (where larger $y$ = lower in the image):
 
-$$\text{rest}(t) \;=\; \mathbb{1}\!\left[\;\frac{1}{|W|}\!\sum_{j \in W} P^{j,y}_t \;>\; \frac{1}{|S|}\!\sum_{j \in S} P^{j,y}_t\;\right]$$
+$$\text{rest}(t) \ =\  \mathbb{1}\ \left[\ \frac{1}{|W|}\ \sum_{j \in W} P^{j,y}_t \ >\  \frac{1}{|S|}\ \sum_{j \in S} P^{j,y}_t\ \right]$$
 
-where $W = \{9, 10\}$ (wrist indices in COCO-WholeBody-133) and $S = \{5, 6\}$ (shoulder indices). The rule is **signer-relative** — it compares the signer's own wrists against the signer's own shoulders — so it auto-scales across PHOENIX (210 × 260 canvas) and CSL (512 × 512 canvas) without any per-dataset threshold.
+where $W = \\{9, 10\\}$ (wrist indices in COCO-WholeBody-133) and $S = \\{5, 6\\}$ (shoulder indices). The rule is **signer-relative** — it compares the signer's own wrists against the signer's own shoulders — so it auto-scales across PHOENIX (210 × 260 canvas) and CSL (512 × 512 canvas) without any per-dataset threshold.
 
 The trim interval is the contiguous non-rest core:
 
-$$t_\text{start} = \min\{t : \text{rest}(t) = 0\}, \qquad t_\text{end} = \max\{t : \text{rest}(t) = 0\} + 1$$
+$$t_\text{start} = \min\\{t : \text{rest}(t) = 0\\}, \qquad t_\text{end} = \max\\{t : \text{rest}(t) = 0\\} + 1$$
 
 Trim is applied only to the *contiguous prefix and suffix* runs of rest frames — we never cut mid-clip. A safety floor preserves the original clip if trimming would leave fewer than 3 frames (the minimum needed for endpoint-velocity estimation in the Hermite bridge).
 
@@ -158,7 +158,7 @@ Trim is applied only to the *contiguous prefix and suffix* runs of rest frames �
 def trim_rest(P):
     sh_y = P[:, [5, 6],  1].mean(axis=1)
     wr_y = P[:, [9, 10], 1].mean(axis=1)
-    valid = (P[:, [5, 6, 9, 10], 2].min(axis=1) > 0)        # all four anchors confidently estimated
+    valid = (P[:, [5, 6, 9, 10], 2].min(axis=1) > 0)        # all 4 anchors confidently estimated
     is_rest = (wr_y > sh_y) & valid
     start = next(t for t in range(len(P)) if not is_rest[t])
     end   = next(t for t in range(len(P)-1, -1, -1) if not is_rest[t]) + 1
@@ -169,11 +169,11 @@ After this transformation, each clip starts and ends *during signing activity*. 
 
 ## 4.5 Hermite bridge — C¹-continuous seam
 
-**Why**: even after trimming, the last frame of clip $A$ and the first frame of clip $B$ are kinematically independent — joining them directly would create a position discontinuity (teleport) and a velocity discontinuity at the seam. A linear interpolation between $\mathbf{p}_0 = c_A[-1]$ and $\mathbf{p}_1 = c_B[0]$ would remove the position teleport but still has $C^0$ continuity (velocity discontinuity remains). A cubic Hermite spline achieves $C^1$ continuity by additionally matching the per-frame velocity at each endpoint.
+Even after trimming, the last frame of clip $A$ and the first frame of clip $B$ are kinematically independent — joining them directly would create a position discontinuity (teleport) and a velocity discontinuity at the seam. A linear interpolation between $\mathbf{p}_0 = c_A[-1]$ and $\mathbf{p}_1 = c_B[0]$ would remove the position teleport but still has $C^0$ continuity (velocity discontinuity remains). A cubic Hermite spline achieves $C^1$ continuity by additionally matching the per-frame velocity at each endpoint.
 
-Per joint, on $(x, y)$ only (the confidence channel is propagated separately, see below), the spline is parameterised by $s \in [0, 1]$:
+Per joint, on $(x, y)$ only (the confidence channel is propagated separately, see below), the spline is parameterized by $s \in [0, 1]$:
 
-$$\mathbf{h}(s) \;=\; h_{00}(s)\,\mathbf{p}_0 \,+\, h_{10}(s)\,\mathbf{m}_0 \,+\, h_{01}(s)\,\mathbf{p}_1 \,+\, h_{11}(s)\,\mathbf{m}_1$$
+$$\mathbf{h}(s) \ =\  h_{00}(s)\ \mathbf{p}_0 \ +\  h_{10}(s)\ \mathbf{m}_0 \ +\  h_{01}(s)\ \mathbf{p}_1 \ +\  h_{11}(s)\ \mathbf{m}_1$$
 
 with the standard cubic Hermite basis polynomials
 
@@ -189,7 +189,7 @@ $$\mathbf{m}_i = \mathbf{v}_i \cdot (n+1) \cdot \alpha_n$$
 
 where $\alpha_n$ is the **length-aware tangent damping** factor
 
-$$\boxed{\;\alpha_n = \frac{n_\text{min}}{\max(n, n_\text{min})}\;}$$
+$$\boxed{\ \alpha_n = \frac{n_\text{min}}{\max(n, n_\text{min})}\ }$$
 
 with $n_\text{min} = 2$. This factor is the key to making the spline behave correctly across both ends of the bridge-length spectrum:
 
@@ -198,23 +198,21 @@ with $n_\text{min} = 2$. This factor is the key to making the spline behave corr
 
 Tangent magnitude is additionally clamped per joint to prevent overshoot when endpoint velocities happen to be locally large:
 
-$$\lVert\mathbf{m}_i\rVert \;\leftarrow\; \min\!\big(\lVert\mathbf{m}_i\rVert,\; 2\,\lVert\mathbf{p}_1 - \mathbf{p}_0\rVert\big)$$
+$$\lVert\mathbf{m}_i\rVert \ \leftarrow\  \min\ (\lVert\mathbf{m}_i\rVert,\  2\ \lVert\mathbf{p}_1 - \mathbf{p}_0\rVert)$$
 
 Confidence is the element-wise minimum of the two endpoint confidences, $c_\text{out}^{(j)} = \min(c_0^{(j)}, c_1^{(j)})$, marking interpolated frames as no more confident than the worst of the two real endpoints.
 
 The bridge length itself is sampled in seconds and converted to integer frames with the floor:
 
-$$n \;=\; \max\!\big(n_\text{min},\, \lfloor \ell \cdot f \rceil\big)$$
+$$n \ =\  \max\ (n_\text{min},\  \lfloor \ell \cdot f \rceil)$$
 
 The floor $n_\text{min} = 2$ is a **numerical** floor, not a tuning knob — a Hermite spline needs at least two interior frames to define a transition (one frame is just a point).
 
 ## 4.6 Inter-clip pause sampling
 
-**Why a parametric fit fails**. A natural first attempt is to fit a LogNormal $\ell \sim \text{LogNormal}(\mu, \sigma)$ to BOBSL inter-subtitle gaps and sample from it. This fails badly because the real distribution is *bimodal*: a large point-mass at $\ell = 0$ (touching or overlapping subtitles = continuous co-articulated signing) plus a heavy-tailed positive component (real sentence-break pauses). No symmetric or unimodal parametric distribution captures the zero spike.
+One attempt is to fit a LogNormal $\ell \sim \text{LogNormal}(\mu, \sigma)$ to BOBSL inter-subtitle gaps and sample from it. This fails badly because the real distribution is *bimodal*: a large point-mass at $\ell = 0$ (touching or overlapping subtitles = continuous co-articulated signing) plus a heavy-tailed positive component (real sentence-break pauses). No symmetric or unimodal parametric distribution captures the zero spike. We instead sample directly from the empirical CDF of BOBSL's manual-aligned inter-subtitle gaps:
 
-**Empirical sampling**. We instead sample directly from the empirical CDF of BOBSL's manual-aligned inter-subtitle gaps:
-
-$$\hat{\mathbb{P}}(\ell) \;=\; \frac{1}{|G|} \sum_{i=1}^{|G|} \delta(\ell - G_i), \qquad \ell \sim \hat{\mathbb{P}}$$
+$$\hat{\mathbb{P}}(\ell) \ =\  \frac{1}{|G|} \sum_{i=1}^{|G|} \delta(\ell - G_i), \qquad \ell \sim \hat{\mathbb{P}}$$
 
 ```python
 def sample_pause_s(rng, G):
@@ -223,19 +221,19 @@ def sample_pause_s(rng, G):
 
 Where the array $G$ comes from $4{,}468$ BOBSL manual VTT files: for every adjacent subtitle pair $(a, b)$ in every file we compute $g = b.\text{start} - a.\text{end}$, giving $|G| = 30{,}552$ gaps. Negatives are clipped to zero (overlapping subtitles cannot be a "pause"; they are continuous signing). After clipping,
 
-$$\mathbb{P}(\ell = 0) \;=\; \frac{|\{G_i : G_i = 0\}|}{|G|} \;=\; \frac{22\,555}{30\,552} \;\approx\; 0.738$$
+$$\mathbb{P}(\ell = 0) \ =\  \frac{|\\{G_i : G_i = 0\\}|}{|G|} \ =\  \frac{22\,555}{30\,552} \ \approx\  0.738$$
 
 So **73.8% of inter-clip joins in any synthesized stream concatenate co-articulated** by construction — without any LogNormal fit, any `pause_min_s` knob, or any `pause_max_s` clamp. The empirical CDF *is* the model.
 
-The remaining $26.2\%$ of joins receive positive bridge durations sampled from the right tail of $G$, with median $\approx 2.0$ s and $p_{90} \approx 6.0$ s — matching what real BOBSL exhibits.
+The remaining 26.2% of joins receive positive bridge durations sampled from the right tail of $G$, with median $\approx 2.0$ s and $p_{90} \approx 6.0$ s — matching what real BOBSL exhibits.
 
 ## 4.7 BG_pre / BG_post sampling
 
-**Why a different sampler for BG**. The two background segments $B_\text{pre}$ and $B_\text{post}$ are conceptually distinct from inter-clip pauses: they represent the silent broadcast lead-in / lead-out, when there is no caption and the signer may not yet (or no longer) be signing. Sampling them from the full empirical $G$ would collapse $\sim 74\%$ of streams to a 2-frame BG (invisible). BG must always be **visibly present** so that the model gets exposure to genuine no-signing regions.
+**Why a different sampler for BG**. The two background segments $B_\text{pre}$ and $B_\text{post}$ are conceptually distinct from inter-clip pauses: they represent the silent broadcast lead-in/lead-out, when there is no caption and the signer may not yet (or no longer) be signing. Sampling them from the full empirical $G$ would collapse ~74% of streams to a 2-frame BG (invisible). BG must always be **visibly present** so that the model gets exposure to genuine no-signing regions.
 
 We therefore sample BG durations from the **conditional distribution** $\hat{\mathbb{P}}(\ell \mid \ell > 0)$, equivalently from the positive-only subset
 
-$$G_+ = \{ G_i \in G : G_i > 0 \}, \quad |G_+| = 7\,997$$
+$$G_+ = \\{ G_i \in G : G_i > 0 \\}, \quad |G_+| = 7\,997$$
 
 ```python
 def sample_bg_s(rng, G_plus):
@@ -246,7 +244,7 @@ This enforces "BG is always positive" by construction without introducing a min-
 
 **Phantom clips.** For the bridge endpoint of the BG segment that is not adjacent to a chosen clip (i.e. the "outside" endpoint of $B_\text{pre}$ or $B_\text{post}$), we sample one additional clip from the same signer's spare pool — the **phantom clip** $\varphi$. This animates the BG region as a real signer-pose-to-real-signer-pose transition rather than a frozen frame. Phantom clips are **not** trimmed: BG segments represent the broadcast lead-in / lead-out, where retaining the phantom's natural rest pose is realistic. Formally:
 
-$$\varphi_L, \varphi_R \;\sim\; \text{Uniform}\big(\mathcal{P}_s \setminus \{c_1, \ldots, c_K\}\big)$$
+$$\varphi_L, \varphi_R \ \sim\  \text{Uniform}(\mathcal{P}_s \setminus \\{c_1, \ldots, c_K\\})$$
 
 If the spare pool is empty, the synthesizer falls back to using the first/last selected clip itself; the seam is still Hermite-interpolated, just less varied.
 
@@ -254,17 +252,17 @@ If the spare pool is empty, the synthesizer falls back to using the first/last s
 
 **Why 60 s, not 15 s.** The model's training window is $W = 15$ s. If the synthesized streams were also $\sim 15$ s long, then evaluation would amount to single-window decoding — not streaming inference. To genuinely exercise streaming behaviour (cross-window event handling, state propagation across windows), streams must span *multiple* training windows. We choose the design ratio
 
-$$W_\text{stream} = 4\,W = 60 \text{ s}$$
+$$W_\text{stream} = 4\ W = 60 \text{ s}$$
 
 as a deliberate compromise: long enough that streaming inference must fire, short enough that signer pools (especially PHOENIX's tight ones) can fill them.
 
-**K range from BOBSL.** For each BOBSL manual VTT we slide a window of length $W_\text{stream}$ with a $1$-s step and count the number of subtitles that fall entirely within each window position. Let $\{N_w\}$ denote the resulting count distribution (over $\sim 161$k window positions across all VTT files). Then
+**K range from BOBSL.** For each BOBSL manual VTT we slide a window of length $W_\text{stream}$ with a $1$-s step and count the number of subtitles that fall entirely within each window position. Let $\\{N_w\\}$ denote the resulting count distribution (over $\sim 161$k window positions across all VTT files). Then
 
-$$K \;\sim\; \text{Uniform}\!\left(\big\{K_\text{lo}, K_\text{lo}+1, \ldots, K_\text{hi}\big\}\right)$$
+$$K \ \sim\  \text{Uniform}\ \left(\\{K_\text{lo}, K_\text{lo}+1, \ldots, K_\text{hi}\\}\right)$$
 
 with
 
-$$K_\text{lo} = Q_{10}(\{N_w\}), \qquad K_\text{hi} = Q_{90}(\{N_w\})$$
+$$K_\text{lo} = Q_{10}(\\{N_w\\}), \qquad K_\text{hi} = Q_{90}(\\{N_w\\})$$
 
 In our current run, $K_\text{lo} = 6, K_\text{hi} = 19$. So a synthesized stream contains 6 to 19 sentences, mirroring how densely real BOBSL packs them in a 60-s window. For comparison, the same computation on a 15-s window gives $[Q_{10}, Q_{90}] = [0, 5]$ — confirming that the 60-s anchor produces $\sim 4 \times$ as many sentences per stream, exactly the design intent.
 
@@ -274,7 +272,7 @@ The per-stream $K$ is additionally clamped to the signer's pool size, $K \leftar
 
 Each split contains a target number of streams chosen so that every clip is used about *once* on average:
 
-$$N_S \;=\; \text{round}\!\left(\frac{|\bigcup_s \mathcal{P}_s|}{\bar{K}}\right), \qquad \bar{K} = \frac{K_\text{lo} + K_\text{hi}}{2}$$
+$$N_S \ =\  \text{round}\ \left(\frac{|\bigcup_s \mathcal{P}_s|}{\bar{K}}\right), \qquad \bar{K} = \frac{K_\text{lo} + K_\text{hi}}{2}$$
 
 This preserves the offline split's contract: no clip duplication beyond what's statistically inevitable. We deliberately do **not** inflate this with a permutation-multiplier knob — on small signer pools (PHOENIX broadcasts have only 2-3 clips each) any multiplier above 1 saturates the $K!$ permutation space and biases training toward duplicated streams. (`rng.choice(..., replace=False)` already returns the chosen elements in a random order, so each stream is implicitly a random permutation of its chosen subset — but we let the permutation-space exploration arise naturally from the per-stream sampling, not from explicit replication.)
 
@@ -290,33 +288,34 @@ The two algorithms below assemble the components into the end-to-end pipeline.
 Inputs:  Pool[s], G, G_+, K_lo, K_hi, FPS, MIN_BRIDGE_FRAMES, rng
 Output:  pose tensor P (T, 133, 3),  cue list A = [(start_s, end_s, text)]
 
- 1: K  ← rng.uniform_int(K_lo, min(K_hi, |Pool[s]|))
- 2: chosen ← rng.choice(Pool[s], K, replace=False)            # ORDER IS RANDOM (= permutation)
+ 1: K         ← rng.uniform_int(K_lo, min(K_hi, |Pool[s]|))
+ 2: chosen    ← rng.choice(Pool[s], K, replace=False)         # ORDER IS RANDOM (= permutation)
  3: resampled ← [trim_rest(resample_to_FPS(P_i, src_fps)) for c_i in chosen]
  4: drop entries shorter than 1·FPS frames; if resampled = ∅ return empty stream
  5: spare ← Pool[s] \ chosen
- 6: if |spare| ≥ 2:
-       φ_L, φ_R ← rng.choice(spare, 2)                        # phantom clips for BG
-    else:
-       φ_L, φ_R ← (resampled[-1], resampled[0])               # fall back to chosen
- 7: ℓ_pre  ← rng.choice(G_+)                                   # BG_pre  duration (positive-only)
- 8: ℓ_post ← rng.choice(G_+)                                   # BG_post duration (positive-only)
+ 6: if |spare| ≥ 2:  φ_L, φ_R ← rng.choice(spare, 2)          # phantom clips for BG
+    else: φ_L, φ_R ← (resampled[-1], resampled[0])            # fall back to chosen
+
+ 7: ℓ_pre  ← rng.choice(G_+)                                  # BG_pre  duration (positive-only)
+ 8: ℓ_post ← rng.choice(G_+)                                  # BG_post duration (positive-only)
  9: B_pre  ← Hermite(φ_L[-1], v(φ_L, "last"),
-                     resampled[0][0],  v(resampled[0], "first"),
+                     resampled[0][0], v(resampled[0], "first"),
                      n = max(MIN_BRIDGE_FRAMES, ⌊ℓ_pre · FPS⌉))
+
 10: segments ← [B_pre]; cues ← []; cur ← |B_pre|
 11: for k = 0 ... K-1:
 12:     segments.append(resampled[k])
 13:     cues.append( (cur/FPS,  (cur+|resampled[k]|)/FPS,  t_k) )
 14:     cur ← cur + |resampled[k]|
 15:     if k < K-1:
-16:         ℓ ← rng.choice(G)                                  # FULL empirical, ~74% zeros
+16:         ℓ ← rng.choice(G)                                 # FULL empirical, ~74% zeros
 17:         Δ ← Hermite(resampled[k][-1],   v(resampled[k],   "last"),
                         resampled[k+1][0], v(resampled[k+1], "first"),
                         n = max(MIN_BRIDGE_FRAMES, ⌊ℓ · FPS⌉))
 18:         segments.append(Δ); cur ← cur + |Δ|
+
 19: B_post ← Hermite(resampled[-1][-1], v(resampled[-1], "last"),
-                     φ_R[0],            v(φ_R,             "first"),
+                     φ_R[0],            v(φ_R,           "first"),
                      n = max(MIN_BRIDGE_FRAMES, ⌊ℓ_post · FPS⌉))
 20: segments.append(B_post)
 21: P ← concat(segments, axis=0);  A ← cues
@@ -344,7 +343,7 @@ Output:  per-split stream files + manifest.json + subset2episode.json
 11:         if A_j ≠ ∅: write poses/<j>.npy, vtt/<j>.vtt, manifest entry
 ```
 
-The construction $\text{rng}_j = \text{np.random.default\_rng}([\text{base\_seed}, j])$ makes every stream's sampling deterministic and independent of stream ordering — re-running with the same seed reproduces every stream byte-for-byte.
+The construction `rng_j = np.random.default_rng([base_seed, j])` makes every stream's sampling deterministic and independent of stream ordering — re-running with the same seed reproduces every stream byte-for-byte.
 
 ---
 
@@ -359,7 +358,7 @@ Every value the synthesizer touches is either pure geometry or measured directly
 | $W_\text{stream}$ | Design ratio $4 W$ | $60$ s |
 | $K_\text{lo}, K_\text{hi}$ | $p_{10}, p_{90}$ of `subs_per_60s_window`(BOBSL) | $[6, 19]$ |
 | $G$ | All inter-subtitle gaps from BOBSL manual VTTs, negatives clipped to 0 | $\lvert G\rvert = 30\,552$, $\mathbb{P}(g=0)=0.738$, $p_{90}=2.0$ s |
-| $G_+$ | $G \setminus \{0\}$ | $\lvert G_+\rvert = 7\,997$, median $2.0$ s, $p_{90} = 10.0$ s |
+| $G_+$ | $G \setminus \\{0\\}$ | $\lvert G_+\rvert = 7\,997$, median $2.0$ s, $p_{90} = 10.0$ s |
 | $n_\text{min}$ | Numerical floor for Hermite (1 frame is just a point) | $2$ |
 | $\rho_\text{min}$ | Need ≥1 phantom + ≥1 chosen | $2$ |
 | trim_rest threshold | Wrists vs shoulder geometry (Boolean per frame, §4.4) | none |
