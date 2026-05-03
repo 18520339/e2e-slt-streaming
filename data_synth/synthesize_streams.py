@@ -6,7 +6,7 @@ Co-articulated streams via four minimal-knob mechanisms:
      otherwise produce an obviously detectable hands-down boundary at every join.
   2. **Empirical pause sampling** draws inter-clip gaps directly from the BOBSL manual
      annotations (~74% are exactly 0 -> co-articulated boundary, ~26% are positive with a
-     heavy right tail). Replaces the previous LogNormal+min/max parametrisation.
+     heavy right tail).
   3. **BG_pre / BG_post sampled from positives only**: the silent broadcast lead-in and
      lead-out are conceptually distinct from inter-sentence joins, and must always be
      visibly present in the stream. Sampling from the positive-only subset of BOBSL gaps
@@ -14,6 +14,7 @@ Co-articulated streams via four minimal-knob mechanisms:
   4. **K-per-stream from a 60s sliding window** (= 4x model training window) so synthesized
      streams span multiple windows and the streaming inference behaviour actually fires at
      evaluation time rather than collapsing to single-window decoding.
+     
 A short Hermite bridge (>= MIN_BRIDGE_FRAMES) connects every seam smoothly even when the
 sampled pause is 0; tangent magnitude is damped inversely with bridge length so long BG
 segments do not extrapolate clip-end momentum into visible overshoot.
@@ -40,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import DATASET_META, WINDOW_DURATION_SECONDS, FPS
 
 # Minimum signer-pure pool size to be included in synthesis 
-# (otherwise the signer is dropped entirely since we can't form a multi-clip stream from them). 
+#   (otherwise the signer is dropped entirely since we can't form a multi-clip stream from them). 
 # This is a tuning knob to trade off diversity (# signers) vs co-articulation realism (multi-clip streams per signer). 
 # Setting it to 2 is a minimal requirement for co-articulation, 
 #   and already excludes some very small pools with only one clip. 
@@ -453,6 +454,11 @@ def synthesize_split(
     groups = {sid: lst for sid, lst in groups.items() if len(lst) >= MIN_POOL_SIZE}
     n_usable = sum(len(v) for v in groups.values())
     k_avg = (k_range[0] + k_range[1]) / 2.0
+    # Each clip used ~once on average across the split (n_usable / K_avg). Preserves the offline
+    # split's contract: no clip duplication beyond what's statistically inevitable. We deliberately
+    # do NOT inflate this with a permutation-multiplier knob -- on small signer pools (PHOENIX
+    # broadcasts have only 2-3 clips each) any multiplier above 1 saturates the K! permutation
+    # space and biases training toward duplicated streams.
     n_streams = max(1, int(round(n_usable / k_avg)))
     print(f'[{dataset}/{split}] usable clips: {n_usable}, signer-pure groups: {len(groups)} -> {n_streams} streams')
     if not groups: raise RuntimeError(f'No signer groups for {dataset}/{split}')
