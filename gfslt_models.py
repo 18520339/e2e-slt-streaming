@@ -123,7 +123,7 @@ class TextCLIP(nn.Module): # Text encoder for CLIP-style contrastive learning us
         super().__init__()
         self.config = config
         mbart_config = MBartConfig.from_pretrained(config.mbart_name)
-        self.backbone = MBartForConditionalGeneration.from_pretrained(config.mbart_name).get_encoder()
+        self.backbone = MBartForConditionalGeneration.from_pretrained(config.mbart_name, low_cpu_mem_usage=False).get_encoder()
         self.lm_head = nn.Linear(mbart_config.d_model, config.embed_dim, bias=False) if head_type == 'linear' else nn.Identity()
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -151,7 +151,7 @@ class ImageCLIP(nn.Module): # Pose encoder for CLIP-style contrastive learning u
         self.config = config
         mbart_config = MBartConfig.from_pretrained(config.mbart_name)
         self.backbone = PoseFeatureExtractor(config, use_temporal_conv=True)
-        self.trans_encoder = MBartForConditionalGeneration.from_pretrained(config.mbart_name).get_encoder()
+        self.trans_encoder = MBartForConditionalGeneration.from_pretrained(config.mbart_name, low_cpu_mem_usage=False).get_encoder()
         self.cls_token = nn.Parameter(torch.randn(1, 1, config.embed_dim)) # CLS token for aggregation
         self.lm_head = nn.Linear(mbart_config.d_model, config.embed_dim, bias=False) if head_type == 'linear' else nn.Identity()
         self.proj = nn.Linear(config.embed_dim, mbart_config.d_model) if config.embed_dim != mbart_config.d_model else nn.Identity()
@@ -264,7 +264,7 @@ class TextDecoder(nn.Module):
         super().__init__()
         self.config = config
         mbart_config = MBartConfig.from_pretrained(config.mbart_name)
-        mbart = MBartForConditionalGeneration.from_pretrained(config.mbart_name)
+        mbart = MBartForConditionalGeneration.from_pretrained(config.mbart_name, low_cpu_mem_usage=False)
         
         self.text_decoder = mbart.get_decoder()
         self.lm_head = mbart.get_output_embeddings()
@@ -332,7 +332,7 @@ class GFSLT(nn.Module):
         super().__init__()
         self.config = config
         self.backbone = PoseFeatureExtractor(config, use_temporal_conv=True) # Pose feature extraction
-        self.mbart = MBartForConditionalGeneration.from_pretrained(config.mbart_name) # MBart for translation
+        self.mbart = MBartForConditionalGeneration.from_pretrained(config.mbart_name, low_cpu_mem_usage=False) # MBart for translation
         self.sign_emb = VisualEncoder(emb_size=self.mbart.config.d_model, feature_size=config.embed_dim) # Visual encoder projection
         self.embed_scale = 1.0
 

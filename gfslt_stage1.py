@@ -81,10 +81,7 @@ class Stage1Trainer(Trainer): # Handles CLIP-style contrastive loss + optional m
         self.text_decoder = text_decoder
         self.mlm_loss_weight = mlm_loss_weight
         if text_decoder is not None:
-            if any(p.is_meta for p in text_decoder.parameters()):
-                self.text_decoder = text_decoder.to_empty(device=self.args.device)
-            else:
-                self.text_decoder = text_decoder.to(self.args.device)
+            self.text_decoder = text_decoder.to(self.args.device)
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         device = next(model.parameters()).device
