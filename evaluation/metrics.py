@@ -5,14 +5,14 @@
 
 2) Dense captioning quality:
    - Following ActivityNet DVC style: for each IoU threshold, form matched
-	 (pred, gt) caption pairs by temporal overlap, compute BLEU-4, METEOR, and CIDEr 
+	 (pred, gt) caption pairs by temporal overlap, compute translation metrics
 	 using Hugging Face's `evaluate` where available, then average scores across thresholds.
    - Additionally, compute SODA_c-like overall storytelling F1 using a
 	 dynamic-programming assignment over (IoU-masked) caption similarities.
 
 3) Paragraph-level captioning quality:
-   - For each window, sort predicted captions by start time and join them into a paragraph; 
-	 compare against ground-truth paragraphs aggregated the same way; report BLEU-4, METEOR, and CIDEr.
+   - For each window, sort predicted captions by start time and join them into a paragraph;
+	 compare against ground-truth paragraphs aggregated the same way; report translation metrics.
 
 Expected inputs from Trainer (with eval_do_concat_batches=True, batch_eval_metrics=False):
 - evaluation_results.predictions: either a dict-like object with keys
@@ -30,17 +30,12 @@ Notes:
   scores. The number of events kept per window defaults to the model's
   predicted count (argmax over pred_counts), with an upper bound of `top_k`.
 '''
-import sys
 import torch
-import numpy as np
 from dataclasses import dataclass
-from typing import Sequence, Union, Dict, List, Tuple
+from typing import Sequence, Dict
 from transformers import AutoTokenizer, EvalPrediction
-
-from utils import cw_to_se
 from postprocess import post_process_object_detection
-from .helpers import compute_iou, precision_recall_at_tiou, pairs_for_threshold, compute_text_metrics
-from .soda_c import compute_soda_at_tiou
+from .helpers import select_topN_per_window, extract_gt_per_window, aggregate_metrics
 
 
 @dataclass
@@ -86,158 +81,15 @@ def compute_metrics(
         target_lengths=None, # Keep relative [0, 1] boxes for IoU computation
         tokenizer=tokenizer,
     )
-    # Build per-window prediction lists with reranking and topN selection
-    batch_pred_events: List[List[Tuple[float, float]]] = []
-    batch_pred_captions: List[List[str]] = []
-
-    # Number of events predicted per window from count head
-    if predictions.pred_counts is not None:
-        topNs = predictions.pred_counts.argmax(dim=-1).clamp(min=0).tolist()
-    else:
-        topNs = [min(top_k, len(p.get('event_scores', []))) for p in post_processed_outputs]
-
-    for pred_window_idx, pred_window in enumerate(post_processed_outputs):
-        event_scores = pred_window['event_scores'].tolist()
-        event_ranges = pred_window['event_ranges'].tolist()  # (start, end)
-        event_caption_scores = pred_window.get('event_caption_scores', [0.0] * len(event_scores))
-        event_captions = pred_window.get('event_captions', [''] * len(event_scores))
-
-        cap_norm = [ # Normalize caption score by length^T to discourage verbosity
-            c / (max(1, len(tokenizer.encode(t))) ** ranking_temperature + 1e-5) 
-            for c, t in zip(event_caption_scores, event_captions)
-        ]
-        joint = [alpha * c + (1 - alpha) * s for c, s in zip(cap_norm, event_scores)]
-        order = list(np.argsort(joint)[::-1]) # Descending order
-
-        if pred_window_idx < len(topNs): # If pred_counts provided, use it
-            keep = int(topNs[pred_window_idx]) 
-        else: # Otherwise, use top_k
-            keep = min(top_k, len(order))  
-            
-        keep = max(0, min(keep, len(order))) # Clamp to valid range
-        chosen_event_ids = order[:keep]
-        batch_pred_events.append([tuple(event_ranges[i]) for i in chosen_event_ids])
-        batch_pred_captions.append([event_captions[i] for i in chosen_event_ids])
-
-    # Extract ground truth from label_ids
-    labels = evaluation_results.label_ids # List of {'class_labels': (N_i, ), 'boxes': (N_i, 2), 'seq_tokens': (N_i, L)}
-    batch_gt_events: List[List[Tuple[float, float]]] = []
-    batch_gt_captions: List[List[str]] = []
-
-    for window in labels:
-        gt_boxes_cw = window.get('boxes', [])  # (N, 2)
-        gt_boxes_cw = gt_boxes_cw if isinstance(gt_boxes_cw, torch.Tensor) else torch.as_tensor(gt_boxes_cw)
-        gt_boxes_se = cw_to_se(gt_boxes_cw) if gt_boxes_cw.numel() else gt_boxes_cw
-        gt_events = [tuple(map(float, box.tolist())) for box in gt_boxes_se]
-        
-        seq_tokens = window.get('seq_tokens', [])
-        texts = tokenizer.batch_decode( # Decode all at once
-            np.where(seq_tokens == -100, tokenizer.pad_token_id, seq_tokens), # Replace -100 (used by HF) with pad token id
-            skip_special_tokens=True, clean_up_tokenization_spaces=True
-        ) if len(seq_tokens) else []
-        
-        # Keep aligned to boxes count (truncate if mismatch)
-        m = min(len(gt_events), len(texts))
-        batch_gt_events.append(gt_events[:m])
-        batch_gt_captions.append(texts[:m])
-        
-    # Calculate Localization and Dense captioning metrics across IoU thresholds
-    metrics: Dict[str, float] = {}
-    precs, recs = [], []
-    dense_scores_accum = {'bleu4': [], 'bleurt': [], 'rougeL': [], 'cider': [], 'meteor': [], 'chrf': []}
-    
-    if soda_recursion_limit > 0: # Python use 1000 by default, increase if needed for SODA_c
-        if soda_recursion_limit <= sys.getrecursionlimit():
-            raise ValueError(f'soda_recursion_limit ({soda_recursion_limit}) must be > current sys recursion limit ({sys.getrecursionlimit()})')
-        sys.setrecursionlimit(soda_recursion_limit)
-        dense_scores_accum['soda_c'] = []
-    
-    for tiou in temporal_iou_thresholds: 
-        precisions_at_tiou, recalls_at_tiou = [], []
-        all_preds_at_tiou: List[str] = []
-        all_refs_at_tiou: List[str] = []
-        soda_f1s_at_tiou = [] 
-        
-        for pred_events, pred_captions, gt_events, gt_captions in zip(
-            batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
-        ):
-            # Localization metrics (precision/recall per window)
-            p, r = precision_recall_at_tiou(pred_events, gt_events, tiou) 
-            if p is not None and r is not None: # Skip windows where both GT and predictions are empty (p, r) = (None, None)
-                precisions_at_tiou.append(p)
-                recalls_at_tiou.append(r)
-            
-            # Dense captioning metrics (pred/gt pairs per window)
-            preds, refs = pairs_for_threshold(pred_events, pred_captions, gt_events, gt_captions, tiou) 
-            all_preds_at_tiou.extend(preds)
-            all_refs_at_tiou.extend(refs)
-            
-            if len(pred_events) == 0 or len(gt_events) == 0:
-                soda_f1s_at_tiou.append(0.0)
-                continue
-            
-            if soda_recursion_limit > 0: # SODA_c-like storytelling score (DP over IoU-masked METEOR similarity)
-                f1_tiou = compute_soda_at_tiou(pred_events, pred_captions, gt_events, gt_captions, tiou)
-                soda_f1s_at_tiou.append(f1_tiou)
-        
-        # Localization metrics
-        precs.append(float(np.mean(precisions_at_tiou) if precisions_at_tiou else 0.0))
-        recs.append(float(np.mean(recalls_at_tiou) if recalls_at_tiou else 0.0))
-        metrics[f'loc_precision@{tiou * 100:.0f}'] = precs[-1]
-        metrics[f'loc_recall@{tiou * 100:.0f}'] = recs[-1]
-        metrics[f'loc_f1@{tiou * 100:.0f}'] = 2 * precs[-1] * recs[-1] / (precs[-1] + recs[-1]) if (precs[-1] + recs[-1]) > 0 else 0.0
-        
-        # Dense captioning metrics
-        text_metrics = compute_text_metrics(all_preds_at_tiou, all_refs_at_tiou)
-        for metric_name in dense_scores_accum:
-            if metric_name in text_metrics:
-                dense_scores_accum[metric_name].append(text_metrics.get(metric_name, 0.0))
-            elif metric_name == 'soda_c' and soda_recursion_limit > 0:
-                dense_scores_accum[metric_name].append(float(np.mean(soda_f1s_at_tiou) if soda_f1s_at_tiou else 0.0))
-            else:
-                dense_scores_accum[metric_name].append(0.0) # Metric not available
-            metrics[f'dense_{metric_name}@{tiou * 100:.0f}'] = dense_scores_accum[metric_name][-1]
-            
-    # Average localization metrics across IoU thresholds
-    loc_precision = float(np.mean(precs) if precs else 0.0)
-    loc_recall = float(np.mean(recs) if recs else 0.0)
-    metrics['loc_precision_avg'] = loc_precision
-    metrics['loc_recall_avg'] = loc_recall
-    metrics['loc_f1_avg'] = 2 * loc_precision * loc_recall / (loc_precision + loc_recall) if (loc_precision + loc_recall) > 0 else 0.0
-    
-    # Average Dense captioning metrics across IoU thresholds
-    for metric_name, scores in dense_scores_accum.items():
-        metrics[f'dense_{metric_name}_avg'] = float(np.mean(scores)) if scores else 0.0
-    
-    # Overall Segmentation and Paragraph-level metrics
-    segment_aligns: List[float] = []     # Segment alignment accuracy or the ratio of predicted segments to ground truth segments
-    segment_overlaps: List[float] = []   # Average IoU to indicate the model's ability to capture precise segment boundaries
-    para_preds: List[str] = []           # Joined predicted captions per window
-    para_refs: List[str] = []            # Joined ground-truth captions per window
-    
-    for pred_events, pred_captions, gt_events, gt_captions in zip(
-        batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions
-    ):
-        # Sort by start time
-        idx_preds = list(np.argsort([s for s, _ in pred_events])) if pred_events else []
-        idx_gts = list(np.argsort([s for s, _ in gt_events])) if gt_events else []
-        
-        # Segment alignment and overlap metrics
-        segment_aligns.append(len(pred_events) / len(gt_events) if len(gt_events) > 0 else 0)
-        segment_overlaps.append(
-            np.mean([max([compute_iou(p, g) for g in gt_events], default=0.0) for p in pred_events])
-            if pred_events and gt_events else 0.0
-        )
-        # Join captions into paragraphs
-        para_pred = ' '.join([pred_captions[i] for i in idx_preds]).strip()
-        para_gt = ' '.join([gt_captions[i] for i in idx_gts]).strip()
-        para_preds.append(para_pred if para_pred else '')
-        para_refs.append(para_gt if para_gt else '')  # single reference
-
-    metrics['segment_alignment'] = float(np.mean(segment_aligns)) if segment_aligns else 0.0
-    metrics['segment_overlap'] = float(np.mean(segment_overlaps)) if segment_overlaps else 0.0
-    para_scores = compute_text_metrics(para_preds, para_refs)
-    
-    for metric_name, score in para_scores.items():
-        metrics[f'para_{metric_name}'] = score
-    return metrics
+    pred_counts = predictions.pred_counts.argmax(dim=-1).clamp(min=0).tolist() if predictions.pred_counts is not None else None
+    batch_pred_events, batch_pred_captions, _ = select_topN_per_window(
+        post_processed_outputs, pred_counts, tokenizer,
+        ranking_temperature=ranking_temperature, alpha=alpha, top_k=top_k,
+    )
+    batch_gt_events, batch_gt_captions = extract_gt_per_window(evaluation_results.label_ids, tokenizer)
+    return aggregate_metrics(
+        batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions,
+        temporal_iou_thresholds=temporal_iou_thresholds,
+        prefix='', include_localization=True, include_paragraph=True, include_segment=True,
+        soda_recursion_limit=soda_recursion_limit,
+    )
