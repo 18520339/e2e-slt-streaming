@@ -20,7 +20,7 @@ Run:
     python -m data_synth.synthesize_h2s --split train --out_root data/synth/h2s
     python -m data_synth.synthesize_h2s --split test --out_root data/synth/h2s
 '''
-import sys, argparse, csv, json
+import os, sys, argparse, csv, json
 from collections import defaultdict
 from pathlib import Path
 from tqdm import tqdm
@@ -37,16 +37,15 @@ MIN_BRIDGE_FRAMES = 2   # numerical floor (matches PHOENIX/CSL synth)
 def linear_bridge(p0: np.ndarray, p1: np.ndarray, n: int) -> np.ndarray:
     '''Linear (C0) interpolation between two (133, 3) endpoints, n intermediate frames.
 
-    No tangent matching — H2S synth deliberately skips co-articulation simulation per
-    project decision. Confidence is element-wise min between endpoints. Returns (n, 133, 3).
+    Vectorized: O(1) NumPy ops instead of a per-frame Python loop. Confidence is element-wise
+    min between endpoints. Returns (n, 133, 3). No tangent matching — H2S synth deliberately
+    skips co-articulation simulation per project decision.
     '''
     if n <= 0: return np.zeros((0, 133, 3), dtype=np.float32)
-    out = np.zeros((n, 133, 3), dtype=np.float32)
-    conf = np.minimum(p0[:, 2], p1[:, 2]).astype(np.float32)
-    for t in range(n):
-        s = (t + 1.0) / (n + 1.0)
-        out[t, :, :2] = (1.0 - s) * p0[:, :2] + s * p1[:, :2]
-        out[t, :, 2] = conf
+    s = (np.arange(1, n + 1, dtype=np.float32) / (n + 1.0))[:, None, None]   # (n, 1, 1)
+    out = np.empty((n, 133, 3), dtype=np.float32)
+    out[..., :2] = (1.0 - s) * p0[None, :, :2].astype(np.float32) + s * p1[None, :, :2].astype(np.float32)
+    out[..., 2] = np.minimum(p0[:, 2], p1[:, 2]).astype(np.float32)[None, :]
     return out
 
 
@@ -61,7 +60,7 @@ def write_vtt(out_vtt: Path, cues): # Write WEBVTT with 1 cue/sentence. cues = [
     ) + "\n", encoding="utf-8")
 
 
-def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path):
+def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path, cache_dir: Path = None):
     '''Build one stream from all rows belonging to a single VIDEO_ID. 
     Returns (n_cues, dur_s) or (0, 0.0) if no usable clips.
 
@@ -72,7 +71,7 @@ def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path):
     prepared = []  # list of (start_s, end_s, sentence, pose: (T, 133, 3))
     for r in rows:
         clip_dir = json_root / r['SENTENCE_NAME']
-        kp = load_clip_pose(str(clip_dir))
+        kp = load_clip_pose(str(clip_dir), cache_dir=str(cache_dir) if cache_dir else None)
         if kp.shape[0] < 3: continue
         kp = resample_to_fps(kp, src_fps=H2S_NATIVE_FPS, tgt_fps=FPS)
         kp = trim_rest(kp)
@@ -124,6 +123,12 @@ def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path):
     return len(cues), pose_full.shape[0] / FPS
 
 
+def _worker(task): # Top-level (picklable) wrapper for ProcessPoolExecutor. Returns (n_cues, dur_s)
+    vid, rows, json_root_s, out_pose_s, out_vtt_s, cache_dir_s = task
+    cache = Path(cache_dir_s) if cache_dir_s else None
+    return synthesize_video(rows, Path(json_root_s), Path(out_pose_s), Path(out_vtt_s), cache_dir=cache)
+
+
 def run_split(args):
     src_root = Path(args.src_root)
     csv_path = src_root / f'how2sign_realigned_{args.split}.csv'
@@ -131,7 +136,6 @@ def run_split(args):
     out_root = Path(args.out_root)
     poses_dir = out_root / 'poses'
     vtt_dir = out_root / 'vtt'
-
     if not csv_path.exists() : raise FileNotFoundError(f'CSV not found: {csv_path}. Have you placed H2S {args.split} split at {src_root}?')
     if not json_root.exists(): raise FileNotFoundError(f'JSON dir not found: {json_root}')
 
@@ -147,16 +151,41 @@ def run_split(args):
     manifest = {'split': args.split, 'n_input_videos': len(groups), 'n_streams_kept': 0,
                 'min_cues': args.min_cues, 'src_fps_native': H2S_NATIVE_FPS, 'fps_target': FPS, 'streams': {}}
     kept_ids = []
-
-    for vid, rows in tqdm(sorted(streamable.items()), desc=f'H2S/{args.split}'):
+    for rows in streamable.values(): # Pre-sort each group's rows once on the main process so workers don't repeat the work.
         rows.sort(key=lambda r: float(r['START_REALIGNED']))
-        out_pose = poses_dir / f'{vid}.npy'
-        out_vtt = vtt_dir / f'{vid}.vtt'
-        n_cues, dur_s = synthesize_video(rows, json_root, out_pose, out_vtt)
-        if n_cues == 0: continue
-        manifest['streams'][vid] = {'n_cues': n_cues, 'duration_s': dur_s, 'sentence_ids': [r['SENTENCE_ID'] for r in rows]}
-        kept_ids.append(vid)
 
+    # Each VIDEO_ID stream is fully independent → embarrassingly parallel. Use process workers
+    # to bypass Python's GIL on the JSON-parse + numpy-arithmetic mix. spawn-safe (top-level
+    # synthesize_video only takes picklable args). Set workers via --workers; default = cpu_count.
+    poses_dir.mkdir(parents=True, exist_ok=True)
+    vtt_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = Path(args.cache_dir) if args.cache_dir else None
+    tasks = [(
+        vid, rows, str(json_root), str(poses_dir / f'{vid}.npy'), 
+        str(vtt_dir / f'{vid}.vtt'), str(cache_dir) if cache_dir else ''
+    ) or vid, rows in sorted(streamable.items())]
+    
+    if args.workers > 1:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(_worker, t): t[0] for t in tasks}
+            for fut in tqdm(as_completed(futures), total=len(futures), desc=f'H2S/{args.split}'):
+                vid = futures[fut]
+                rows = streamable[vid]
+                n_cues, dur_s = fut.result()
+                if n_cues == 0: continue
+                manifest['streams'][vid] = {'n_cues': n_cues, 'duration_s': dur_s,
+                                             'sentence_ids': [r['SENTENCE_ID'] for r in rows]}
+                kept_ids.append(vid)
+    else: # Sequential path (debug / tiny splits). Keeps stack traces inline.
+        for t in tqdm(tasks, desc=f'H2S/{args.split}'):
+            vid = t[0]
+            rows = streamable[vid]
+            n_cues, dur_s = _worker(t)
+            if n_cues == 0: continue
+            manifest['streams'][vid] = {'n_cues': n_cues, 'duration_s': dur_s,
+                                         'sentence_ids': [r['SENTENCE_ID'] for r in rows]}
+            kept_ids.append(vid)
     manifest['n_streams_kept'] = len(kept_ids)
     return kept_ids, manifest
 
@@ -167,6 +196,11 @@ def main():
                     help='Folder containing how2sign_realigned_<split>.csv and json/<clip>/*.json')
     ap.add_argument('--out_root', default='data/synth/h2s')
     ap.add_argument('--split', choices=['train', 'val', 'test'], default='val')
+    ap.add_argument('--workers', type=int, default=max(1, (os.cpu_count() or 4) - 1),
+                    help='Process-pool size for per-VIDEO_ID parallel synthesis. 1 = sequential.')
+    ap.add_argument('--cache_dir', type=str, default='data/How2Sign_pose_cache',
+                    help='Per-clip parsed-pose cache directory. First run populates; later runs '
+                         'skip JSON parsing entirely (the dominant cost). Pass empty string to disable.')
     ap.add_argument('--min_cues', type=int, default=2,
                     help='Drop streams with fewer than this many sentences after filtering')
     args = ap.parse_args()
@@ -186,8 +220,8 @@ def main():
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
 
     print(f'[H2S/{args.split}] {len(kept_ids)} streams written to {out_root}')
-    print(f'  poses: {out_root / 'poses'}/<video_id>.npy')
-    print(f'  vtt:   {out_root / 'vtt'}/<video_id>.vtt')
+    print(f"  poses: {out_root / 'poses'}/<video_id>.npy")
+    print(f"  vtt:   {out_root / 'vtt'}/<video_id>.vtt")
     print(f'  subset2episode.json updated → split={split_map[args.split]}')
     print(f'  manifest: {manifest_path}')
 

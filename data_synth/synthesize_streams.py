@@ -121,18 +121,30 @@ def trim_rest(kpts: np.ndarray) -> np.ndarray:
 
 
 def resample_to_fps(kpts: np.ndarray, src_fps: float, tgt_fps: float = FPS) -> np.ndarray:
+    '''Vectorized linear resample on (x, y), nearest-neighbour on confidence.
+
+    Replaces a 133-joint Python loop (~266 per-clip np.interp calls) with a single set of
+    NumPy index/broadcast ops. Result is mathematically identical to the prior per-joint
+    implementation (linear interp on x/y with side='left' nearest-neighbour for confidence).
+    '''
     if abs(src_fps - tgt_fps) < 1e-6 or kpts.shape[0] < 2: return kpts
     T_src = kpts.shape[0]
     duration = T_src / src_fps
     T_tgt = max(1, int(round(duration * tgt_fps)))
     src_t = np.arange(T_src, dtype=np.float64) / src_fps
     tgt_t = np.clip(np.arange(T_tgt, dtype=np.float64) / tgt_fps, src_t[0], src_t[-1])
-    out = np.zeros((T_tgt, 133, 3), dtype=np.float32)
-    for j in range(133):
-        out[:, j, 0] = np.interp(tgt_t, src_t, kpts[:, j, 0])
-        out[:, j, 1] = np.interp(tgt_t, src_t, kpts[:, j, 1])
-        idx = np.clip(np.searchsorted(src_t, tgt_t, side='left'), 0, T_src - 1)
-        out[:, j, 2] = kpts[idx, j, 2]
+
+    # Linear interp on x, y: locate bracketing source indices and per-target weight.
+    lo = np.clip(np.searchsorted(src_t, tgt_t, side='right') - 1, 0, T_src - 2)
+    hi = lo + 1
+    span = src_t[hi] - src_t[lo]
+    span[span == 0] = 1.0
+    frac = ((tgt_t - src_t[lo]) / span).astype(np.float32)[:, None, None]
+    out = np.empty((T_tgt, 133, 3), dtype=np.float32)
+    out[..., :2] = (1.0 - frac) * kpts[lo][..., :2] + frac * kpts[hi][..., :2]
+    # Confidence: nearest-neighbour, matching prior `searchsorted side='left'` semantics.
+    near = np.clip(np.searchsorted(src_t, tgt_t, side='left'), 0, T_src - 1)
+    out[..., 2] = kpts[near, :, 2]
     return out
 
 
