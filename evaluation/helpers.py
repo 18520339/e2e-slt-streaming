@@ -18,8 +18,8 @@ SACREBLEU_TOKENIZE = SACREBLEU_TOKENIZE_BY_LANG.get(TGT_LANG, '13a')
 bleu = evaluate.load('sacrebleu')  # Range: 0-100
 bleurt = BleurtScorer(BLEURT_CHECKPOINT_PATH)
 rouge = evaluate.load('rouge')
+cider = evaluate.load('sunhill/cider')
 meteor = evaluate.load('meteor')
-cider = evaluate.load('Kamichanw/CIDEr')
 chrf = evaluate.load('chrf') # CHRF as a tokenization-free fallback (especially useful for Chinese)
 
 
@@ -93,10 +93,10 @@ def pairs_for_threshold(
 
 
 def compute_text_metrics(predictions: List[str], references: List[str]) -> Dict[str, float]:
-	# Compute BLEU-4, BLEURT, ROUGE-L, METEOR, CIDEr (+ CHRF when available) using HuggingFace's evaluate package
+	# Compute BLEU-4, BLEURT, ROUGE-L, CIDEr, METEOR, CHRF using HuggingFace's evaluate package
 	# Language-aware: sacrebleu tokenization is selected from TGT_LANG (config); BLEURT/ROUGE/METEOR/CIDEr operate on
 	# untokenized strings. For Chinese, ROUGE/METEOR work on chars by default; CHRF and BLEU(zh) carry the most signal.
-	if len(predictions) == 0: return {'bleu4': 0.0, 'bleurt': 0.0, 'rougeL': 0.0, 'meteor': 0.0, 'cider': 0.0, 'chrf': 0.0}
+	if len(predictions) == 0: return {'bleu4': 0.0, 'bleurt': 0.0, 'rougeL': 0.0, 'cider': 0.0, 'meteor': 0.0, 'chrf': 0.0}
 	bleu_score = bleu.compute(
 		predictions=predictions,
 		references=[[ref] for ref in references],
@@ -105,14 +105,14 @@ def compute_text_metrics(predictions: List[str], references: List[str]) -> Dict[
 	bleurt_scores = bleurt.score(candidates=predictions, references=references)
 	bleurt_score = sum(bleurt_scores) / max(1, len(bleurt_scores))
 	rouge_score = rouge.compute(predictions=predictions, references=references)['rougeL']
-	cider_score = cider.compute(predictions=predictions, references=[[ref] for ref in references])['CIDEr']
+	cider_score = cider.compute(predictions=predictions, references=[[ref] for ref in references])['cider_score']
 	meteor_score = meteor.compute(predictions=predictions, references=references)['meteor']
 	chrf_score = chrf.compute(predictions=predictions, references=[[ref] for ref in references])['score']
 	return {
 		'bleu4': float(bleu_score),    # SacreBLEU returns corpus BLEU (%) across n-gram up to 4 by default,
 		'bleurt': float(bleurt_score), # Roughly between 0 and 1 (sometimes less than 0, sometimes more than 1)
 		'rougeL': float(rouge_score),  
+		'cider': float(cider_score),
 		'meteor': float(meteor_score), 
-		'cider': float(cider_score),   # https://github.com/huggingface/evaluate/pull/613/files
 		'chrf': float(chrf_score),
 	}

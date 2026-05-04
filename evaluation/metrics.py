@@ -144,7 +144,7 @@ def compute_metrics(
     # Calculate Localization and Dense captioning metrics across IoU thresholds
     metrics: Dict[str, float] = {}
     precs, recs = [], []
-    dense_scores_accum = {'bleu4': [], 'bleurt': [], 'rougeL': [], 'meteor': [], 'cider': []}
+    dense_scores_accum = {'bleu4': [], 'bleurt': [], 'rougeL': [], 'cider': [], 'meteor': [], 'chrf': []}
     
     if soda_recursion_limit > 0: # Python use 1000 by default, increase if needed for SODA_c
         if soda_recursion_limit <= sys.getrecursionlimit():
