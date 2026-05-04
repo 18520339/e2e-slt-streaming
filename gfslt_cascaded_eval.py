@@ -34,8 +34,7 @@ from postprocess import post_process_object_detection
 
 from gfslt_models import GFSLT, GFSLTConfig
 from config import WINDOW_DURATION_SECONDS, FPS
-from evaluation.helpers import compute_iou, precision_recall_at_tiou, pairs_for_threshold, compute_text_metrics
-from utils import cw_to_se
+from evaluation.helpers import select_topN_per_window, extract_gt_per_window, aggregate_metrics
 
 
 @dataclass
@@ -87,7 +86,7 @@ class EvalArguments: # Arguments for evaluation
     gfslt_max_new_tokens: int = field(default=40)
     gfslt_num_beams: int = field(default=1)
     skip_gfslt: bool = field(default=False, metadata={'help': 'Skip GFSLT captioning for fast localization-only eval'})
-    max_events_per_window: int = field(default=3, metadata={'help': 'Max events per window to caption (for speed)'})
+    max_events_per_window: int = field(default=10, metadata={'help': 'Max events per window to caption (for speed)'})
     use_fp16: bool = field(default=False, metadata={'help': 'Use FP16 for faster inference'})
 
 
@@ -175,60 +174,32 @@ class MultiStageEvaluator:
             print(f"  pred_counts shape: {outputs.pred_counts.shape if outputs.pred_counts is not None else 'None'}")
             self._debug_printed = True
         
-        # Post-process with threshold=0 (we'll select via counter head)
+        # Post-process with threshold=0 (count head + reranking selects later)
         # Get more events than needed, then filter by counter head
         results_normalized = post_process_object_detection(
             outputs=outputs,
-            top_k=20,  # Get plenty, we'll filter by counter head
+            top_k=self.max_events_per_window,  # match metrics.py top_k -- guarantees identical selection
             threshold=0.0,  # No threshold - use counter head instead
             target_lengths=None,  # Keep in [0,1] for IoU comparison
             tokenizer=self.detr_tokenizer,
         )
-        
-        # Get event counts from counter head
+        # Count head -> per-window N (same as metrics.py compute_metrics)
         if outputs.pred_counts is not None: pred_counts = outputs.pred_counts.argmax(dim=-1).clamp(min=0).cpu().tolist()
-        else: pred_counts = [min(3, len(r['event_scores'])) for r in results_normalized]
-        
-        # Format results with counter-head based selection and reranking (like metrics.py)
+        else: pred_counts = None
+
+        # Shared selection helper -> identical to metrics.py path
+        batch_pred_events, batch_detr_captions, _ = select_topN_per_window(
+            results_normalized, pred_counts, self.detr_tokenizer,
+            ranking_temperature=2.0, alpha=0.3, top_k=self.max_events_per_window,
+        )
+        # Convert normalized [0,1] ranges -> absolute frame indices for GFSLT captioning
         batch_results = []
-        for i, r in enumerate(results_normalized):
-            # Get all event data
-            event_scores = r['event_scores'].cpu().numpy().tolist() if len(r['event_scores']) else []
-            event_ranges = r['event_ranges'].cpu().numpy().tolist() if len(r['event_ranges']) else []
-            event_caption_scores = r.get('event_caption_scores', [0.0] * len(event_scores))
-            detr_captions = r['event_captions'] if 'event_captions' in r else []
-            
-            # Rerank by joint (caption + detection) score like metrics.py
-            # cap_norm = caption_score / (len(tokens)^T + 1e-5)
-            # joint = alpha * cap_norm + (1-alpha) * event_score
-            alpha = 0.3  # From metrics.py default
-            ranking_temperature = 2.0  # From metrics.py default
-            
-            if len(event_scores) > 0:
-                cap_norm = [
-                    c / (max(1, len(self.detr_tokenizer.encode(t))) ** ranking_temperature + 1e-5)
-                    for c, t in zip(event_caption_scores, detr_captions)
-                ]
-                joint = [alpha * c + (1 - alpha) * s for c, s in zip(cap_norm, event_scores)]
-                order = list(np.argsort(joint)[::-1])  # Descending order
-                
-                # Select top n_events from reranked order
-                n_events = min(pred_counts[i], self.max_events_per_window, len(order))
-                chosen_ids = order[:n_events]
-                
-                event_ranges_normalized = [event_ranges[j] for j in chosen_ids]
-                event_scores_selected = [event_scores[j] for j in chosen_ids]
-                detr_captions_selected = [detr_captions[j] for j in chosen_ids]
-            else: event_ranges_normalized, event_scores_selected, detr_captions_selected = [], [], []
-            
-            # Convert to absolute frame indices for GFSLT captioning
+        for i, (event_ranges_normalized, detr_captions_selected) in enumerate(zip(batch_pred_events, batch_detr_captions)):
             valid_frames = pixel_mask[i].sum().item()
             event_ranges_frames = [(int(s * valid_frames), int(e * valid_frames)) for s, e in event_ranges_normalized]
-            
             batch_results.append({
                 'event_ranges_normalized': event_ranges_normalized,
                 'event_ranges_frames': event_ranges_frames,
-                'event_scores': event_scores_selected,
                 'detr_captions': detr_captions_selected,
             })
         return batch_results
@@ -329,12 +300,10 @@ class MultiStageEvaluator:
             
             if finished.all(): break # Stop if all finished
             decoder_input_ids = next_tokens.unsqueeze(1) # Next iteration only needs the new token (cache has history)
-        
-        # Decode all to text
-        return [self.gfslt_tokenizer.decode(ids, skip_special_tokens=True) for ids in generated_ids]
+        return [self.gfslt_tokenizer.decode(ids, skip_special_tokens=True) for ids in generated_ids] # Decode all to text
     
     
-    def evaluate(self, data_loader: DataLoader, iou_thresholds: List[float] = [0.3, 0.5, 0.7, 0.9]) -> Dict[str, float]:
+    def evaluate(self, data_loader: DataLoader, iou_thresholds: Tuple[float, ...] = (0.3, 0.5, 0.7, 0.9)) -> Dict[str, float]:
         ''' Full evaluation loop computing metrics at each IoU threshold.
         
         Returns:
@@ -359,21 +328,24 @@ class MultiStageEvaluator:
             detr_results = self.predict_detr_localizations(batch)
             
             # Stage 2: Collect ALL events from ALL windows for batch GFSLT processing
-            all_batch_poses = []  # Padded pose tensors for all events
-            window_event_counts = []  # Track how many events per window for redistribution
-            
+            # Track per-event validity so captions stay aligned even when some events are
+            # degenerate (start_frame >= end_frame) and skipped from GFSLT input.
+            all_batch_poses = []                       # padded pose tensors for VALID events only
+            window_valid_masks: List[List[bool]] = []  # per-window list of bool, True = caption from GFSLT, False = empty
+
             for i, (poses, detr_result, label) in enumerate(zip(pixel_values, detr_results, labels)):
                 pred_events_frames = detr_result['event_ranges_frames'][:self.max_events_per_window]
-                window_event_counts.append(len(pred_events_frames))
-                
-                # Prepare padded poses for each event
+                valid_mask = []
                 for start_frame, end_frame in pred_events_frames:
                     start_frame = max(0, int(start_frame))
                     end_frame = min(poses.shape[0], int(end_frame))
                     if start_frame < end_frame:
                         event_poses = poses[start_frame:end_frame]
-                        padded_poses = pad_event_to_window_size(event_poses, self.window_size)
-                        all_batch_poses.append(padded_poses)
+                        all_batch_poses.append(pad_event_to_window_size(event_poses, self.window_size))
+                        valid_mask.append(True)
+                    else:
+                        valid_mask.append(False)
+                window_valid_masks.append(valid_mask)
             
             # Run GFSLT on ALL events at once
             if self.skip_gfslt or self.gfslt_model is None or len(all_batch_poses) == 0:
@@ -384,122 +356,43 @@ class MultiStageEvaluator:
                 pixel_mask = torch.ones(len(all_batch_poses), self.window_size, dtype=torch.bool, device=self.device)
                 all_gfslt_captions_flat = self._generate_gfslt_captions_batch(stacked_poses, pixel_mask)
             
-            # Redistribute captions back to windows
+            # Redistribute GFSLT captions back to per-window lists. Use per-event valid_mask
+            # so degenerate (skipped) events get '' instead of pulling the next window's caption.
             caption_idx = 0
-            for i, (poses, detr_result, label) in enumerate(zip(pixel_values, detr_results, labels)):
-                pred_events_normalized = detr_result['event_ranges_normalized'][:self.max_events_per_window]
-                pred_events_frames = detr_result['event_ranges_frames'][:self.max_events_per_window]
-                
-                # Get this window's captions from the flat list
-                n_events = window_event_counts[i]
-                gfslt_captions = all_gfslt_captions_flat[caption_idx:caption_idx + n_events]
-                caption_idx += n_events
-                detr_captions = detr_result['detr_captions'][:self.max_events_per_window] # DETR captions (baseline)
-                
-                # Ground truth
-                gt_boxes_cw = label.get('boxes', torch.empty(0, 2))
-                gt_boxes_se = cw_to_se(gt_boxes_cw) if gt_boxes_cw.numel() else gt_boxes_cw
-                gt_events = [tuple(map(float, box.tolist())) for box in gt_boxes_se]
-                
-                seq_tokens = label.get('seq_tokens', [])
-                gt_captions = self.detr_tokenizer.batch_decode(
-                    np.where(seq_tokens.numpy() == -100, self.detr_tokenizer.pad_token_id, seq_tokens.numpy()),
-                    skip_special_tokens=True, clean_up_tokenization_spaces=True
-                ) if len(seq_tokens) else []
-                m = min(len(gt_events), len(gt_captions)) # Keep aligned counts
-                
-                if len(all_pred_events) < 3: # Debug: print first few samples to trace event coordinates
-                    print(f"\n[DEBUG Window {len(all_pred_events)}]")
-                    print(f"  Pred events (normalized): {pred_events_normalized[:3]}")
-                    print(f"  GT events (from cw_to_se): {gt_events[:3]}")
-                    
-                    # Compute and show IoUs between predictions and GTs
-                    if len(pred_events_normalized) > 0 and len(gt_events) > 0:
-                        for pi, pe in enumerate(pred_events_normalized[:2]):
-                            for gi, ge in enumerate(gt_events[:2]):
-                                iou = compute_iou(pe, ge)
-                                print(f"  IoU(pred[{pi}]={pe}, gt[{gi}]={ge}) = {iou:.4f}")
-                
-                all_pred_events.append(pred_events_normalized)
-                all_gfslt_captions.append(gfslt_captions)
-                all_detr_captions.append(detr_captions)
-                all_gt_events.append(gt_events[:m])
-                all_gt_captions.append(gt_captions[:m])
-        
-        # Compute metrics
-        metrics = self._compute_metrics(
-            all_pred_events, all_gfslt_captions, all_detr_captions,
-            all_gt_events, all_gt_captions, iou_thresholds
-        )
-        return metrics
-    
-    
-    def _compute_metrics(
-        self, pred_events: List[List[Tuple[float, float]]],
-        gfslt_captions: List[List[str]], detr_captions: List[List[str]],
-        gt_events: List[List[Tuple[float, float]]], gt_captions: List[List[str]], iou_thresholds: List[float],
-    ) -> Dict[str, float]: # Compute all metrics across IoU thresholds
-        metrics = {}
-        loc_precs, loc_recs = [], []
-        gfslt_scores_accum = {'bleu4': [], 'bleurt': [], 'rougeL': [], 'meteor': [], 'cider': []}
-        detr_scores_accum = {'bleu4': [], 'bleurt': [], 'rougeL': [], 'meteor': [], 'cider': []}
-        
-        for tiou in iou_thresholds:
-            print(f'\nComputing metrics at tIoU >= {tiou}...')
-            
-            # Localization metrics
-            precs_at_tiou, recs_at_tiou = [], []
-            gfslt_preds_at_tiou, gfslt_refs_at_tiou = [], []
-            detr_preds_at_tiou, detr_refs_at_tiou = [], []
-            
-            for pe, gc, dc, ge, gtc in zip(pred_events, gfslt_captions, detr_captions, gt_events, gt_captions):
-                # Localization P/R
-                p, r = precision_recall_at_tiou(pe, ge, tiou)
-                if p is not None and r is not None:
-                    precs_at_tiou.append(p)
-                    recs_at_tiou.append(r)
-                
-                # Caption pairs for GFSLT
-                gfslt_p, gfslt_r = pairs_for_threshold(pe, gc, ge, gtc, tiou)
-                gfslt_preds_at_tiou.extend(gfslt_p)
-                gfslt_refs_at_tiou.extend(gfslt_r)
-                
-                # Caption pairs for DETR baseline
-                detr_p, detr_r = pairs_for_threshold(pe, dc, ge, gtc, tiou)
-                detr_preds_at_tiou.extend(detr_p)
-                detr_refs_at_tiou.extend(detr_r)
-            
-            # Aggregate localization
-            loc_prec = float(np.mean(precs_at_tiou)) if precs_at_tiou else 0.0
-            loc_rec = float(np.mean(recs_at_tiou)) if recs_at_tiou else 0.0
-            loc_f1 = 2 * loc_prec * loc_rec / (loc_prec + loc_rec) if (loc_prec + loc_rec) > 0 else 0.0
-            loc_precs.append(loc_prec)
-            loc_recs.append(loc_rec)
-            
-            metrics[f'loc_precision@{int(tiou*100)}'] = loc_prec
-            metrics[f'loc_recall@{int(tiou*100)}'] = loc_rec
-            metrics[f'loc_f1@{int(tiou*100)}'] = loc_f1
-            
-            # GFSLT captioning metrics
-            gfslt_text_metrics = compute_text_metrics(gfslt_preds_at_tiou, gfslt_refs_at_tiou)
-            for k, v in gfslt_text_metrics.items():
-                if k in gfslt_scores_accum: gfslt_scores_accum[k].append(v)
-                metrics[f'gfslt_{k}@{int(tiou*100)}'] = v
-            
-            # DETR captioning metrics (baseline)
-            detr_text_metrics = compute_text_metrics(detr_preds_at_tiou, detr_refs_at_tiou)
-            for k, v in detr_text_metrics.items():
-                if k in detr_scores_accum: detr_scores_accum[k].append(v)
-                metrics[f'detr_{k}@{int(tiou*100)}'] = v
-        
-        # Average metrics
-        metrics['loc_precision_avg'] = float(np.mean(loc_precs)) if loc_precs else 0.0
-        metrics['loc_recall_avg'] = float(np.mean(loc_recs)) if loc_recs else 0.0
-        loc_p, loc_r = metrics['loc_precision_avg'], metrics['loc_recall_avg']
-        metrics['loc_f1_avg'] = 2 * loc_p * loc_r / (loc_p + loc_r) if (loc_p + loc_r) > 0 else 0.0
-        
-        for k, v in gfslt_scores_accum.items(): metrics[f'gfslt_{k}_avg'] = float(np.mean(v)) if v else 0.0
-        for k, v in detr_scores_accum.items(): metrics[f'detr_{k}_avg'] = float(np.mean(v)) if v else 0.0
+            batch_pred_events_local, batch_gfslt_caps_local, batch_detr_caps_local = [], [], []
+            for i, detr_result in enumerate(detr_results):
+                window_caps = []
+                for valid in window_valid_masks[i]:
+                    if valid:
+                        window_caps.append(all_gfslt_captions_flat[caption_idx])
+                        caption_idx += 1
+                    else:
+                        window_caps.append('')
+                batch_pred_events_local.append(detr_result['event_ranges_normalized'])
+                batch_gfslt_caps_local.append(window_caps)
+                batch_detr_caps_local.append(detr_result['detr_captions'])
+
+            # Shared GT extraction -> identical to metrics.py path
+            batch_gt_events_local, batch_gt_caps_local = extract_gt_per_window(labels, self.detr_tokenizer)
+            all_pred_events.extend(batch_pred_events_local)
+            all_gfslt_captions.extend(batch_gfslt_caps_local)
+            all_detr_captions.extend(batch_detr_caps_local)
+            all_gt_events.extend(batch_gt_events_local)
+            all_gt_captions.extend(batch_gt_caps_local)
+
+        # Compute metrics via shared aggregator. Two caption sources -> two calls
+        # with different prefixes; localization computed once on the first call.
+        metrics: Dict[str, float] = {}
+        metrics.update(aggregate_metrics(
+            all_pred_events, all_gfslt_captions, all_gt_events, all_gt_captions,
+            temporal_iou_thresholds=iou_thresholds, prefix='gfslt',
+            include_localization=True, include_paragraph=True, include_segment=True,
+        ))
+        metrics.update(aggregate_metrics(
+            all_pred_events, all_detr_captions, all_gt_events, all_gt_captions,
+            temporal_iou_thresholds=iou_thresholds, prefix='detr',
+            include_localization=False, include_paragraph=True, include_segment=False,
+        ))
         return metrics
 
 
