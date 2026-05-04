@@ -47,7 +47,26 @@ class DeformableDetrModel(DeformableDetrPreTrainedModel): # Re-wired for 1D feat
         self.contrastive_mode = contrastive_mode
         # Positional encoding: d_model//2 for temporal pos, d_model//2 for duration pos
         self.position_embeddings = PositionEmbeddingSine(config.d_model // 2, normalize=True)
-        self.backbone = CoSign1s(temporal_kernel=temporal_kernel, hidden_size=config.d_model, contrastive_mode=contrastive_mode)
+        
+        # Backbone selection (env-driven via config.BACKBONE). MSKABackbone is a drop-in:
+        # same (B, T, ?, 3) → (B, T, hidden_size) contract. Note: MSKABackbone consumes the
+        # full 133-keypoint COCO-WholeBody tensor; CoSign1s consumes the 77-selected output.
+        # The loader handles per-backbone preprocessing.
+        # Caveat for Stage 1 contrastive pretraining: MSKABackbone has no built-in 2-view
+        # masking — when contrastive_mode=True it returns (feat, feat). MSKA's representation
+        # was already pre-trained with gloss CTC supervision on PHOENIX/CSL, so it's
+        # reasonable to SKIP Stage 1 when BACKBONE=mska (pass `--mode 2` directly).
+        from config import BACKBONE, MSKA_CKPT, WIDTH, HEIGHT, WINDOW_DURATION_SECONDS, FPS
+        if BACKBONE == 'mska':
+            from backbones.mska_backbone import MSKABackbone
+            ckpt = MSKA_CKPT if MSKA_CKPT else None
+            num_frame = max(int(WINDOW_DURATION_SECONDS * FPS), 400)
+            self.backbone = MSKABackbone(
+                hidden_size=config.d_model, ckpt_path=ckpt,
+                canvas_w=WIDTH, canvas_h=HEIGHT, num_frame=num_frame,
+                contrastive_mode=contrastive_mode,
+            )
+        else: self.backbone = CoSign1s(temporal_kernel=temporal_kernel, hidden_size=config.d_model, contrastive_mode=contrastive_mode)
         with torch.no_grad(): # Recursively replace all nn.BatchNorm2d with DeformableDetrFrozenBatchNorm2d
             replace_batch_norm(self.backbone)
 

@@ -186,8 +186,12 @@ class DVCDataset(Dataset):
             window_poses = np.asarray(window_poses, dtype=np.float32)
             window_poses = augment_dvc_window(window_poses)
         
-        # Preprocess poses: Normalize and threshold
-        window_poses = normalize_keypoints(window_poses)
+        # Preprocess poses: Normalize and threshold.
+        # MSKA backbone needs the raw 133-keypoint COCO-WholeBody tensor (it does its own
+        # multi-stream indexing + [-1,1] normalization inside MSKABackbone). CoSign expects
+        # the 77-keypoint group-normalized output that normalize_keypoints emits.
+        if BACKBONE == 'cosign': window_poses = normalize_keypoints(window_poses)  # → (T, 77, 3)
+        # else (mska): leave raw (T, 133, 3) — MSKABackbone normalizes internally.
         window_poses = threshold_confidence(window_poses)
 
         # Crop/pad to fixed window size if needed and build a frame mask

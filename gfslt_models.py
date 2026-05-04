@@ -25,7 +25,7 @@ import types
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backbones.cosign import CoSign1s
-from config import TRIMMED_MBART_DIR
+from config import *
 
 
 def load_gfslt_mbart(model_path: str) -> MBartForConditionalGeneration:
@@ -113,10 +113,22 @@ class PoseFeatureExtractor(nn.Module):
     def __init__(self, config: GFSLTConfig, level: str = 'spatial', adaptive: bool = True, use_temporal_conv: bool = True):
         super().__init__()
         self.config = config
-        self.cosign = CoSign1s( # Use CoSign backbone for pose feature extraction
-            temporal_kernel=config.temporal_kernel, hidden_size=config.hidden_size,
-            level=level, adaptive=adaptive
-        )
+        # Backbone selection via env-driven flag (see config.BACKBONE). MSKABackbone is a
+        # drop-in: same (B, T, ?, 3) → (B, T, hidden_size) contract as CoSign1s. MSKA
+        # expects FULL 133-keypoint COCO-WholeBody input, CoSign expects the 77-selected
+        # group-normalized output. The loader handles the conditional preprocessing.
+        if BACKBONE == 'mska':
+            from backbones.mska_backbone import MSKABackbone
+            ckpt = MSKA_CKPT if MSKA_CKPT else None
+            num_frame = max(int(WINDOW_DURATION_SECONDS * FPS), 400)
+            self.cosign = MSKABackbone(
+                hidden_size=config.hidden_size, ckpt_path=ckpt,
+                canvas_w=WIDTH, canvas_h=HEIGHT, num_frame=num_frame,
+            )
+        else: self.cosign = CoSign1s( # CoSign1s ST-GCN backbone for pose feature extraction
+                temporal_kernel=config.temporal_kernel, hidden_size=config.hidden_size,
+                level=level, adaptive=adaptive
+            )
         self.use_temporal_conv = use_temporal_conv
         if self.use_temporal_conv:
             self.temporal_conv = TemporalConv1D(input_size=config.hidden_size, hidden_size=config.embed_dim, conv_type=2)
