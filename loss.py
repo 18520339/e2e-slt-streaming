@@ -107,30 +107,42 @@ class ContrastiveLoss(nn.Module):
         '''
         # Pool visual features to window-level: [B, T, D] -> [B, D]
         v1_pooled = self._masked_mean_pool(view1, visual_mask)
-        v2_pooled = self._masked_mean_pool(view2, visual_mask)
         losses, loss_terms = {}, []
-        
-        # Visual-to-visual alignment (bidirectional)
-        loss_v1_v2 = self._infonce_loss(v1_pooled, v2_pooled)
-        loss_v2_v1 = self._infonce_loss(v2_pooled, v1_pooled)
-        losses['loss_v1_v2'] = loss_v1_v2
-        losses['loss_v2_v1'] = loss_v2_v1
-        loss_terms.extend([loss_v1_v2, loss_v2_v1])
-        
-        # Cross-modal alignment if text is provided (bidirectional for each view)
-        if text_emb is not None:
-            loss_v1_txt = self._infonce_loss(v1_pooled, text_emb)
-            loss_v2_txt = self._infonce_loss(v2_pooled, text_emb)
-            loss_txt_v1 = self._infonce_loss(text_emb, v1_pooled)
-            loss_txt_v2 = self._infonce_loss(text_emb, v2_pooled)
-            
-            losses['loss_v1_txt'] = loss_v1_txt
-            losses['loss_v2_txt'] = loss_v2_txt
-            losses['loss_txt_v1'] = loss_txt_v1
-            losses['loss_txt_v2'] = loss_txt_v2
-            loss_terms.extend([loss_v1_txt, loss_v2_txt, loss_txt_v1, loss_txt_v2])
-        
-        # Total contrastive loss: average of all pairwise losses
+
+        # Detect "bimodal fallback" path: when view1 and view2 are the SAME tensor (identical storage), 
+        # the backbone could not produce two augmented visual views. This is the MSKABackbone case — 
+        # its DSTA encoder has no built-in random-masking 2-view path, so we degrade gracefully to the 
+        # GFSLT-VLP-style visual<->text bimodal contrastive objective (V<->T only, skipping the V<->V self-agreement terms).
+        if (view1 is view2) or (view1.data_ptr() == view2.data_ptr()):
+            if text_emb is None: raise ValueError(
+                'Bimodal contrastive (single-view backbone, e.g. MSKA) requires text_emb. '
+                'Pass text_emb in Stage 1, or switch to a backbone that emits two augmented views (e.g. CoSign).'
+            )
+            loss_v_txt = self._infonce_loss(v1_pooled, text_emb)
+            loss_txt_v = self._infonce_loss(text_emb, v1_pooled)
+            losses['loss_v_txt'] = loss_v_txt
+            losses['loss_txt_v'] = loss_txt_v
+            loss_terms.extend([loss_v_txt, loss_txt_v])
+        else: # Original tri-modal path (CoSign 2-view + text): 6 directional InfoNCE losses.
+            v2_pooled = self._masked_mean_pool(view2, visual_mask)
+            loss_v1_v2 = self._infonce_loss(v1_pooled, v2_pooled)
+            loss_v2_v1 = self._infonce_loss(v2_pooled, v1_pooled)
+            losses['loss_v1_v2'] = loss_v1_v2
+            losses['loss_v2_v1'] = loss_v2_v1
+            loss_terms.extend([loss_v1_v2, loss_v2_v1])
+
+            if text_emb is not None:
+                loss_v1_txt = self._infonce_loss(v1_pooled, text_emb)
+                loss_v2_txt = self._infonce_loss(v2_pooled, text_emb)
+                loss_txt_v1 = self._infonce_loss(text_emb, v1_pooled)
+                loss_txt_v2 = self._infonce_loss(text_emb, v2_pooled)
+                losses['loss_v1_txt'] = loss_v1_txt
+                losses['loss_v2_txt'] = loss_v2_txt
+                losses['loss_txt_v1'] = loss_txt_v1
+                losses['loss_txt_v2'] = loss_txt_v2
+                loss_terms.extend([loss_v1_txt, loss_v2_txt, loss_txt_v1, loss_txt_v2])
+
+        # Total contrastive loss: average of all pairwise losses (count adapts to # terms).
         losses['loss_contrastive'] = sum(loss_terms) / len(loss_terms)
         return losses
 
