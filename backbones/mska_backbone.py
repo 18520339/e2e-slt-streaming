@@ -387,10 +387,15 @@ class MSKABackbone(nn.Module):
         
         # Upsample T_out → T to match CoSign1s output contract. (Linear is fine; segmentation
         # head reads normalized [0,1] centers, so resampling is consistent.)
+        # IMPORTANT: align_corners=True is required here. With align_corners=False the
+        # endpoints are shifted by half a sample, creating ~1-frame systematic drift between
+        # the predicted boundary positions and the GT — at strict tIoU thresholds (e.g. 0.9)
+        # every prediction misses, collapsing localization recall AND translation metrics
+        # (which are evaluated only on tIoU-matched events) to exactly 0.0.
         if feat.shape[1] != T: feat = F.interpolate(
             feat.transpose(1, 2),                # (B, D, T_out)
             size=T, mode='linear', 
-            align_corners=False,
+            align_corners=True,
         ).transpose(1, 2)                        # (B, T, D)
         if self.contrastive_mode: return feat, feat  # API compat with CoSign1s 2-view return
         return feat
