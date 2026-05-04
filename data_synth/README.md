@@ -407,8 +407,8 @@ python -m data_synth.analyze_bobsl_gaps \
 # If skipped, the synthesizer falls back to an analytic distribution that emulates the same shape.
 
 # 1. Synthesize streams (no count args; everything derived from data + BOBSL stats).
-python -m data_synth.synthesize_streams --dataset PHOENIX --out_root data/synth/phoenix
-python -m data_synth.synthesize_streams --dataset CSL     --out_root data/synth/csl
+python -m data_synth.synthesize_streams --dataset PHOENIX --out_root data/synth/phoenix --seed 42
+python -m data_synth.synthesize_streams --dataset CSL     --out_root data/synth/csl  --seed 43
 
 # 2. Visualize a few streams (reads DATASET env to pick canvas; renders the 77 model-input keypoints
 #    with auto-fit window so out-of-frame pose outliers don't push the body off-screen).
@@ -439,11 +439,11 @@ K is derived from a **60-second** sliding window of BOBSL ($= 4 W$, the model's 
 | PHOENIX train | 564 | 387 broadcasts | 6.99 | 7.67 | 41.6 / 65.2 | 0.00 / 2.00 | 0.715 |
 | PHOENIX val | 27 | 25 | 0.10 | 2.07 | 13.0 / 20.8 | 0.00 / 1.10 | 0.515 |
 | PHOENIX test | 38 | 35 | 0.17 | 2.50 | 15.1 / 25.8 | 0.00 / 2.00 | 0.522 |
-| CSL train | 1467 | 10 P-ids | 22.10 | 10.61 | 52.3 / 81.1 | 0.00 / 2.00 | 0.715 |
-| CSL val | 86 | 10 | 1.29 | 10.30 | 51.6 / 81.6 | 0.00 / 2.00 | 0.718 |
-| CSL test | 94 | 10 | 1.57 | 10.77 | 53.6 / 92.2 | 0.00 / 2.00 | 0.717 |
+| CSL train | 1467 | 10 P-ids | 21.67 | 10.38 | 50.2 / 82.4 | 0.00 / 2.00 | 0.716 |
+| CSL val | 86 | 10 | 1.43 | 10.95 | 55.8 / 88.3 | 0.00 / 2.00 | 0.710 |
+| CSL test | 94 | 10 | 1.56 | 11.00 | 58.4 / 90.4 | 0.00 / 2.00 | 0.745 |
 
-Pause distribution matches the BOBSL empirical sample by construction (~74% of inter-clip joins have $\ell = 0$ and concatenate co-articulated, see §4.6). PHOENIX dev/test streams are shorter than train because per-broadcast clip pools on those splits are only ~2–3 clips — same-signer-per-stream caps $K$ at the pool size; the underlying biological signer count is 9 across all 622 broadcasts. CSL is unaffected (each of the 10 P-ids has hundreds of clips per split).
+Pause distribution matches the BOBSL empirical sample by construction (~74% of inter-clip joins have $\ell = 0$ and concatenate co-articulated, see §4.6). PHOENIX dev/test streams are shorter than train because per-broadcast clip pools on those splits are only ~2–3 clips — same-signer-per-stream caps $K$ at the pool size; the underlying biological signer count is 9 across all 629 broadcasts. CSL is unaffected (each of the 10 P-ids has hundreds of clips per split).
 
 ---
 
