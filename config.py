@@ -24,10 +24,18 @@ BLEURT_CHECKPOINT_PATH = '/tmp/BLEURT-20'  # Multilingual BLEURT-20 (covers de_D
 # We do NOT rescale Phoenix/CSL coordinates to BOBSL's 444 reference - each language is trained from
 # scratch on its own data, so its native canvas is the fair input distribution.
 #
-# mBART backbone: facebook/mbart-large-cc25 covers all three target languages (en_XX, de_DE, zh_CN);
-# the 25-language mix includes Chinese.
+# mBART backbone: facebook/mbart-large-cc25 covers all 3 target languages (en_XX, de_DE, zh_CN);
 DATASET = os.environ.get('DATASET', 'BOBSL').upper()
 MBART_NAME = 'facebook/mbart-large-cc25'
+
+# -- Backbone selection -----------------------------------------------------
+# BACKBONE='cosign' (default) uses CoSign1s ST-GCN on 77 selected keypoints (group-norm).
+# BACKBONE='mska' loads the multi-stream DSTA pose encoder vendored from MSKA, with weights
+#                from the MSKA SLT release (gloss/CTC heads stripped at load-time).
+# MSKA_CKPT auto-resolves to the per-dataset checkpoint; override via env var if needed.
+BACKBONE = os.environ.get('BACKBONE', 'cosign').lower()
+if BACKBONE not in ('cosign', 'mska'):
+    raise ValueError(f"Unknown BACKBONE={BACKBONE!r}; expected 'cosign' or 'mska'")
 
 if DATASET == 'BOBSL':
     DATA_ROOT = Path('data/BOBSL')
@@ -55,16 +63,32 @@ elif DATASET == 'CSL':
     TGT_LANG = 'zh_CN'
     TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_tokenizer_csl'
     TRIMMED_MBART_DIR = 'captioners/trimmed_mbart_csl'
-    WIDTH, HEIGHT = 512, 512   # MSKA HRNet padded reference for CSL-Daily
-else:
-    raise ValueError(f"Unknown DATASET={DATASET!r}; expected one of BOBSL/PHOENIX/CSL")
+    WIDTH, HEIGHT = 512, 512   # Padded reference for CSL-Daily
+elif DATASET == 'H2S': # How2Sign streaming benchmark. Stream timing comes from the realigned CSV (real ASL inter-sentence gaps)
+    # Pose data adapted from OpenPose-137 via data_synth/op_to_coco133.py into COCO-WholeBody-133 layout used by the rest of the pipeline.
+    DATA_ROOT = Path('data/synth/h2s')
+    POSE_ROOT = DATA_ROOT / 'poses'
+    SUBSET_JSON = DATA_ROOT / 'subset2episode.json'
+    VTT_DIR = DATA_ROOT / 'vtt'
+    TGT_LANG = 'en_XX'
+    TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_tokenizer_h2s'
+    TRIMMED_MBART_DIR = 'captioners/trimmed_mbart_h2s'
+    WIDTH, HEIGHT = 1280, 720  # How2Sign realigned RGB native canvas (OP coords are pixels on this canvas)
+else: raise ValueError(f"Unknown DATASET={DATASET!r}; expected one of BOBSL/PHOENIX/CSL/H2S")
 
-# -- Per-dataset native canvas/fps used by the synthesizer (data-derived; do not change unless
-# the upstream MSKA preprocessing changes). The synthesizer reads these so no CLI args are needed.
+# -- Per-dataset native canvas/fps used by the synthesizer
 DATASET_META = {
     'PHOENIX': {'src_fps': 25.0, 'src_w': 210, 'src_h': 260, 'pickle_dir': Path('data/Phoenix-2014T'), 'pickle_prefix': 'Phoenix-2014T'},
-    'CSL':     {'src_fps': 30.0, 'src_w': 512, 'src_h': 512, 'pickle_dir': Path('data/CSL-Daily'),     'pickle_prefix': 'CSL-Daily'},
+    'CSL':     {'src_fps': 30.0, 'src_w': 512, 'src_h': 512, 'pickle_dir': Path('data/CSL-Daily')    , 'pickle_prefix': 'CSL-Daily'},
+    'H2S':     {'src_fps': 30.0, 'src_w': 1280, 'src_h': 720, 'src_root': Path('data/How2Sign')},
 }
+
+# MSKA checkpoint auto-resolution per dataset. Override with MSKA_CKPT env var.
+_MSKA_CKPT_DEFAULTS = {
+    'PHOENIX': 'checkpoints/mska_phoenix.pth',
+    'CSL':     'checkpoints/mska_csl.pth',
+}
+MSKA_CKPT = os.environ.get('MSKA_CKPT', _MSKA_CKPT_DEFAULTS.get(DATASET, ''))
 
 # -- Dataset and Dataloader Configuration -----------------------------------
 FPS = 12.5 # Downsampled FPS from original 25fps
