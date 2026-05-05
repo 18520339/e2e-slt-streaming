@@ -60,7 +60,7 @@ def write_vtt(out_vtt: Path, cues): # Write WEBVTT with 1 cue/sentence. cues = [
     ) + "\n", encoding="utf-8")
 
 
-def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path, cache_dir: Path = None):
+def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path, cache_dir: Path = None, max_gap_s: float = None):
     '''Build one stream from all rows belonging to a single VIDEO_ID. 
     Returns (n_cues, dur_s) or (0, 0.0) if no usable clips.
 
@@ -83,24 +83,26 @@ def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path, cache
         prepared.append((start_s, end_s, r['SENTENCE'].strip(), kp))
     if not prepared: return 0, 0.0
 
-    # 2. Build stream timeline. Stream local time t=0 corresponds to original-video t=START_REALIGNED[0].
-    t0 = prepared[0][0]
+    # 2. Build stream timeline. Each gap is computed directly from the CSV's realigned
+    # timestamps (real H2S inter-cue silence). When `max_gap_s` is set, any real gap
+    # exceeding it is clamped to max_gap_s — drops over-long instructional dead time
+    # while keeping all natural pauses below the cap. Without the cap, very long source
+    # gaps (10-30s+ common in How2Sign) produce streams with mostly-empty windows that
+    # exhaust the loader's random-window sampler and trigger frequent fallbacks.
     segments = []   # list of (133, 3) frame arrays in stream order
     cues = []       # (start_s, end_s, text) in stream-local seconds
     cur_frame = 0   # running frame counter on stream timeline
 
     for i, (start_s, end_s, text, pose) in enumerate(prepared):
-        # Target stream-local placement of this clip:
-        target_frame = int(round((start_s - t0) * FPS))
-        # Pad with bridge frames to hit target placement (gap between previous clip and this one).
-        if i == 0: assert target_frame == 0 # No leading BG: stream begins at first clip onset.
-        else:
-            gap_frames = max(0, target_frame - cur_frame)
-            prev_pose = prepared[i - 1][3]
+        if i > 0:
+            prev_start_s, prev_end_s, _, prev_pose = prepared[i - 1]
+            real_gap_s = max(0.0, start_s - prev_end_s)
+            if max_gap_s is not None and real_gap_s > max_gap_s: real_gap_s = float(max_gap_s)
+            gap_frames = max(0, int(round(real_gap_s * FPS)))
             if gap_frames > 0:
                 # Linear bridge from last frame of prev clip → first frame of this clip.
-                # If gap below MIN_BRIDGE_FRAMES, still emit linear (n>=1) — no co-articulation
-                # cleanup needed since trim_rest already removed clip-end rest poses.
+                # No co-articulation cleanup needed since trim_rest already removed clip-end
+                # rest poses. Linear (C0) keeps the seam smooth without inventing momentum.
                 bridge = linear_bridge(prev_pose[-1], pose[0], gap_frames)
                 segments.append(bridge)
                 cur_frame += gap_frames
@@ -124,9 +126,9 @@ def synthesize_video(rows, json_root: Path, out_pose: Path, out_vtt: Path, cache
 
 
 def _worker(task): # Top-level (picklable) wrapper for ProcessPoolExecutor. Returns (n_cues, dur_s)
-    vid, rows, json_root_s, out_pose_s, out_vtt_s, cache_dir_s = task
+    vid, rows, json_root_s, out_pose_s, out_vtt_s, cache_dir_s, max_gap_s = task
     cache = Path(cache_dir_s) if cache_dir_s else None
-    return synthesize_video(rows, Path(json_root_s), Path(out_pose_s), Path(out_vtt_s), cache_dir=cache)
+    return synthesize_video(rows, Path(json_root_s), Path(out_pose_s), Path(out_vtt_s), cache_dir=cache, max_gap_s=max_gap_s)
 
 
 def run_split(args):
@@ -148,8 +150,8 @@ def run_split(args):
     # Drop single-sentence videos (no streaming structure to learn).
     streamable = {vid: rows for vid, rows in groups.items() if len(rows) >= 2}
     if args.min_cues > 2: streamable = {vid: rows for vid, rows in streamable.items() if len(rows) >= args.min_cues}
-    manifest = {'split': args.split, 'n_input_videos': len(groups), 'n_streams_kept': 0,
-                'min_cues': args.min_cues, 'src_fps_native': H2S_NATIVE_FPS, 'fps_target': FPS, 'streams': {}}
+    manifest = {'split': args.split, 'n_input_videos': len(groups), 'n_streams_kept': 0, 'min_cues': args.min_cues, 
+                'max_gap_s': args.max_gap_s, 'src_fps_native': H2S_NATIVE_FPS, 'fps_target': FPS, 'streams': {}}
     kept_ids = []
     for rows in streamable.values(): # Pre-sort each group's rows once on the main process so workers don't repeat the work.
         rows.sort(key=lambda r: float(r['START_REALIGNED']))
@@ -160,10 +162,12 @@ def run_split(args):
     poses_dir.mkdir(parents=True, exist_ok=True)
     vtt_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
-    tasks = [(
-        vid, rows, str(json_root), str(poses_dir / f'{vid}.npy'), 
-        str(vtt_dir / f'{vid}.vtt'), str(cache_dir) if cache_dir else ''
-    ) or vid, rows in sorted(streamable.items())]
+    tasks = [
+        (vid, rows, str(json_root), str(poses_dir / f'{vid}.npy'),
+         str(vtt_dir / f'{vid}.vtt'), str(cache_dir) if cache_dir else '',
+         args.max_gap_s)
+        for vid, rows in sorted(streamable.items())
+    ]
     
     if args.workers > 1:
         from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -203,6 +207,11 @@ def main():
                          'skip JSON parsing entirely (the dominant cost). Pass empty string to disable.')
     ap.add_argument('--min_cues', type=int, default=2,
                     help='Drop streams with fewer than this many sentences after filtering')
+    ap.add_argument('--max_gap_s', type=float, default=None,
+                    help='Cap inter-cue gap (seconds) to control benchmark difficulty. H2S source gaps '
+                         'can be 10-30s+ (instructional dead time); 15s training windows then often land '
+                         'in BG-only regions, exhausting the loader\'s random sampler and triggering frequent '
+                         'fallbacks. Suggested cap: 8 or 10 seconds. Default None = no cap (real CSV gaps).')
     args = ap.parse_args()
 
     kept_ids, manifest = run_split(args)
@@ -216,14 +225,35 @@ def main():
     split_map = {'train': 'train', 'val': 'val', 'test': 'test'}
     existing[split_map[args.split]] = sorted(kept_ids)
     subset_path.write_text(json.dumps(existing, indent=2), encoding='utf-8')
-    manifest_path = out_root / f'manifest_{args.split}.json'
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    
+    # Per-split debug manifest (full per-stream metadata for the current run).
+    per_split_path = out_root / f'manifest_{args.split}.json'
+    per_split_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+
+    # Unified `manifest.json` (matches PHOENIX/CSL synth convention so dataset_stats.py can consume it directly). 
+    # Each call updates only the current split's slot, preserving entries from prior split runs.
+    unified_path = out_root / 'manifest.json'
+    if unified_path.exists(): unified = json.loads(unified_path.read_text(encoding='utf-8'))
+    else: unified = {'dataset': 'H2S', 'streams': {}, 'config': {}}
+    
+    # streams[split] = list-of-dicts (one per stream, with video_id) so PHOENIX/CSL-shaped
+    # dataset_stats.py can iterate it the same way.
+    unified.setdefault('streams', {})[split_map[args.split]] = [
+        {'video_id': vid, **meta} for vid, meta in manifest['streams'].items()
+    ]
+    unified.setdefault('config', {})[split_map[args.split]] = {
+        'min_cues': args.min_cues, 'max_gap_s': args.max_gap_s,
+        'src_fps_native': H2S_NATIVE_FPS, 'fps_target': FPS,
+    }
+    unified_path.write_text(json.dumps(unified, indent=2, ensure_ascii=False), encoding='utf-8')
 
     print(f'[H2S/{args.split}] {len(kept_ids)} streams written to {out_root}')
     print(f"  poses: {out_root / 'poses'}/<video_id>.npy")
     print(f"  vtt:   {out_root / 'vtt'}/<video_id>.vtt")
     print(f'  subset2episode.json updated → split={split_map[args.split]}')
-    print(f'  manifest: {manifest_path}')
+    print(f"  manifest.json    (unified) updated → streams[{split_map[args.split]}]")
+    print(f"  manifest_{args.split}.json (per-split debug) written")
+    # (manifest paths printed inline above; nothing more to log)
 
 
 if __name__ == "__main__":
