@@ -37,6 +37,11 @@ Drop-in BOBSL-style outputs:
 Run:
     python -m data_synth.synthesize_streams --dataset PHOENIX --out_root data/synth/phoenix
     python -m data_synth.synthesize_streams --dataset CSL     --out_root data/synth/csl
+
+Shorter / easier streams (3..5 sentences each; also yields more total streams since
+n_streams = n_usable / K_avg):
+    python -m data_synth.synthesize_streams --dataset PHOENIX --out_root data/synth/phoenix --k_range 3 5
+    python -m data_synth.synthesize_streams --dataset CSL     --out_root data/synth/csl     --k_range 3 5
 '''
 import argparse, json, pickle, re
 import numpy as np
@@ -510,6 +515,9 @@ def main():
     p.add_argument('--bobsl_gap_stats', default='data_synth/stats/bobsl_gap_stats.json',
                    help='JSON of BOBSL manual-aligned pause statistics; if missing, use fallback.')
     p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--k_range', type=int, nargs=2, metavar=('LO', 'HI'), default=None,
+                   help='Override sentences-per-stream range [LO, HI]. e.g. --k_range 3 5 for shorter, '
+                        'easier streams (also yields more total streams since n_streams = n_usable/K_avg).')
     args = p.parse_args()
     
     out_root = Path(args.out_root)
@@ -519,7 +527,14 @@ def main():
     out_vtt_dir.mkdir(parents=True, exist_ok=True)
 
     pause = load_pause_dist(args.bobsl_gap_stats)
-    k_range = load_k_range(args.bobsl_gap_stats)
+    if args.k_range is not None:
+        lo, hi = int(args.k_range[0]), int(args.k_range[1])
+        if lo < 1 or hi < lo: raise ValueError(f'invalid --k_range {args.k_range}: need 1 <= LO <= HI')
+        k_range = (lo, hi)
+        print(f'(K range overridden by --k_range: [{lo}, {hi}])')
+    else:
+        k_range = load_k_range(args.bobsl_gap_stats)
+        
     splits_cfg = [('train', args.seed), ('val', args.seed + 1), ('test', args.seed + 2)]
     subset: Dict[str, List[str]] = {}
     full_manifest: Dict[str, List[dict]] = {}
