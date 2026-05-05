@@ -1,5 +1,14 @@
 '''Synthesize streaming sign-language datasets from offline pre-segmented pose pickles.
 
+This module covers the **PHOENIX-2014T (DGS)** and **CSL-Daily (CSL)** synthesis pathway,
+which builds streams from per-clip pickle pose data with same-signer concatenation, BOBSL-
+derived pause sampling, and Hermite C¹ bridges.
+
+For **How2Sign (ASL)** we use a DIFFERENT pathway implemented in `synthesize_h2s.py`:
+streams come from real CSV-realigned timestamps, sentences are placed on the original-video
+timeline, and bridges are linear C⁰ (no co-articulation simulation). See data_synth/README §H2S.
+
+
 Co-articulated streams via four minimal-knob mechanisms:
   1. **trim_rest** strips leading/trailing rest frames (wrists below shoulders) from each
      clip. Removes the isolated-recording "preparation" and "retraction" phases that would

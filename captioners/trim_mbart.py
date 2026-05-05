@@ -2,8 +2,9 @@
 
 The trim target language and mBART backbone are read from `config` (controlled by the DATASET env var):
     BOBSL    -> mbart-large-cc25, en_XX -> captioners/trimmed_tokenizer_bobsl{,_mbart}
-    PHOENIX  -> mbart-large-50,   de_DE -> captioners/trimmed_tokenizer_phoenix{,_mbart}
-    CSL      -> mbart-large-50,   zh_CN -> captioners/trimmed_tokenizer_csl{,_mbart}
+    PHOENIX  -> mbart-large-cc25, de_DE -> captioners/trimmed_tokenizer_phoenix{,_mbart}
+    CSL      -> mbart-large-cc25, zh_CN -> captioners/trimmed_tokenizer_csl{,_mbart}
+    H2S      -> mbart-large-cc25, en_XX -> captioners/trimmed_tokenizer_h2s{,_mbart}
 
 Run this ONCE per dataset before training. It iterates the train split's VTT files (which for synth datasets
 are the per-stream synth VTTs) and collects every subtitle token, then runs the standard hf-trim flow.

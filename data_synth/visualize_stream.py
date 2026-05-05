@@ -18,6 +18,10 @@ Usage:
     DATASET=CSL python -m data_synth.visualize_stream \
         --pose data/synth/csl/poses/test_00000.npy \
         --vtt  data/synth/csl/vtt/test_00000.vtt --out examples/csl_test_00000.mp4
+
+    DATASET=H2S python -m data_synth.visualize_stream \
+        --pose data/synth/h2s/poses/<VIDEO_ID>.npy \
+        --vtt  data/synth/h2s/vtt/<VIDEO_ID>.vtt --out examples/h2s_demo.mp4
 '''
 import os, sys, argparse, cv2
 import numpy as np
