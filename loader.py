@@ -257,11 +257,18 @@ class DVCDataset(Dataset):
             )['input_ids'].squeeze(0) # Remove batch dim
 
         else: # No valid subtitles in window
+            # Critical: paragraph_tokens / masked_paragraph_tokens are fed straight into an
+            # nn.Embedding lookup in pdvc.py:_encode_text. torch.empty returns UNINITIALIZED
+            # memory — int64 garbage that can be negative or > vocab_size, causing a CUDA
+            # gather "index out of bounds" assertion. Fill with pad_token_id so the lookup
+            # is always valid; the downstream attention mask (token != pad_token_id) zeroes
+            # out the contribution to the pooled embedding regardless.
+            pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
             labels['class_labels'] = torch.empty(0, dtype=torch.long)
             labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
             labels['seq_tokens'] = torch.empty(0, self.max_event_tokens, dtype=torch.long)
-            labels['paragraph_tokens'] = torch.empty(self.max_window_tokens, dtype=torch.long)
-            labels['masked_paragraph_tokens'] = torch.empty(self.max_window_tokens, dtype=torch.long)
+            labels['paragraph_tokens'] = torch.full((self.max_window_tokens,), pad_id, dtype=torch.long)
+            labels['masked_paragraph_tokens'] = torch.full((self.max_window_tokens,), pad_id, dtype=torch.long)
 
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels
