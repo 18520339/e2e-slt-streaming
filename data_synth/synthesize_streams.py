@@ -35,13 +35,13 @@ Drop-in BOBSL-style outputs:
     manifest.json                           # provenance: signer/clip ids per stream + seed
 
 Run:
-    python -m data_synth.synthesize_streams --dataset PHOENIX --out_root data/synth/phoenix
-    python -m data_synth.synthesize_streams --dataset CSL     --out_root data/synth/csl
+    DATASET=PHOENIX python -m data_synth.synthesize_streams --out_root data/synth/phoenix
+    DATASET=CSL python -m data_synth.synthesize_streams --out_root data/synth/csl
 
 Shorter / easier streams (3..5 sentences each; also yields more total streams since
 n_streams = n_usable / K_avg):
-    python -m data_synth.synthesize_streams --dataset PHOENIX --out_root data/synth/phoenix --k_range 3 5
-    python -m data_synth.synthesize_streams --dataset CSL     --out_root data/synth/csl     --k_range 3 5
+    DATASET=PHOENIX python -m data_synth.synthesize_streams --out_root data/synth/phoenix --k_range 3 5
+    DATASET=CSL python -m data_synth.synthesize_streams     --out_root data/synth/csl     --k_range 3 5
 '''
 import argparse, json, pickle, re
 import numpy as np
@@ -52,7 +52,7 @@ from typing import Dict, List, Tuple
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import DATASET_META, WINDOW_DURATION_SECONDS, FPS
+from config import DATASET, SYNTH_META, WINDOW_DURATION_SECONDS, FPS
 
 # Minimum signer-pure pool size to be included in synthesis 
 #   (otherwise the signer is dropped entirely since we can't form a multi-clip stream from them). 
@@ -229,29 +229,6 @@ def endpoint_velocity(clip: np.ndarray, end: str) -> np.ndarray:
     return v
 
 
-def sample_duration_s(rng: np.random.Generator, pause: dict) -> float:
-    '''Direct empirical sample from the BOBSL inter-subtitle gap array.
-
-    No LogNormal fit, no min/max clamp, no `pause_min_s`. The empirical array already encodes
-    BOBSL's natural shape: ~74% of inter-subtitle gaps are exactly 0 (touching/overlapping
-    subtitles = continuous co-articulated signing) and ~26% are positive with a heavy right
-    tail. Sampling directly preserves both modes by construction.
-    '''
-    return float(rng.choice(pause['samples_s']))
-
-
-def sample_bg_duration_s(rng: np.random.Generator, pause: dict) -> float:
-    '''Sample a BG_pre/BG_post duration from the positive-only subset of BOBSL gaps.
-
-    Inter-clip pauses can legitimately be 0s (continuous co-articulated signing), but BG segments
-    represent the silent broadcast preamble where there is no caption -- they should always be
-    visibly present in the stream. Sampling from positives only enforces this by construction
-    without introducing a min-duration knob: the floor is whatever the smallest positive BOBSL
-    inter-subtitle gap is.
-    '''
-    return float(rng.choice(pause['bg_samples_s']))
-
-
 def synth_one_stream(
     rng: np.random.Generator, signer_pool: List[str],
     clips: Dict[str, dict], src_fps: float, pause: dict, k_range: Tuple[int, int],
@@ -301,7 +278,7 @@ def synth_one_stream(
     # the first sentence). Animated, biomechanically grounded in real signer poses. Sampled from
     # the POSITIVE-only subset of BOBSL gaps so BG segments are always visibly present in the
     # stream -- representing the silent broadcast lead-in, not an inter-sentence join.
-    L_pre_s = sample_bg_duration_s(rng, pause)
+    L_pre_s = float(rng.choice(pause['bg_samples_s']))
     n_pre = max(MIN_BRIDGE_FRAMES, int(round(L_pre_s * FPS)))
     bg_pre = hermite_interp_segment(
         phantom_left[-1], resampled[0][0],
@@ -318,7 +295,7 @@ def synth_one_stream(
         cues.append((cur / FPS, (cur + clip.shape[0]) / FPS, text))
         cur += clip.shape[0]
         if i < len(resampled) - 1:
-            L_pause_s = sample_duration_s(rng, pause)
+            L_pause_s = float(rng.choice(pause['samples_s']))
             n_pause = max(MIN_BRIDGE_FRAMES, int(round(L_pause_s * FPS)))
             pause_seg = hermite_interp_segment(
                 clip[-1], resampled[i + 1][0],
@@ -332,7 +309,7 @@ def synth_one_stream(
 
     # BG_post = Hermite interp from resampled[-1][-1] -> phantom_right[0] (broadcast lead-out;
     # same positive-only sampling as BG_pre).
-    L_post_s = sample_bg_duration_s(rng, pause)
+    L_post_s = float(rng.choice(pause['bg_samples_s']))
     n_post = max(MIN_BRIDGE_FRAMES, int(round(L_post_s * FPS)))
     bg_post = hermite_interp_segment(
         resampled[-1][-1], phantom_right[0],
@@ -462,21 +439,19 @@ def load_k_range(stats_path: str) -> Tuple[int, int]:
 
 
 def synthesize_split(
-    dataset: str, split: str, out_pose_dir: Path, out_vtt_dir: Path,
+    split: str, out_pose_dir: Path, out_vtt_dir: Path,
     base_seed: int, pause: dict, k_range: Tuple[int, int],
 ) -> Tuple[List[str], List[dict]]:
-    src_fps = DATASET_META[dataset]['src_fps']
     load_split = 'dev' if split == 'val' else split
-    meta = DATASET_META[dataset]
-    pickle_path = meta['pickle_dir'] / f"{meta['pickle_prefix']}.{load_split}"
+    pickle_path = SYNTH_META['pickle_dir'] / f"{SYNTH_META['pickle_prefix']}.{load_split}"
     
-    print(f'[{dataset}/{split}] loading {pickle_path}')
+    print(f'[{DATASET}/{split}] loading {pickle_path}')
     with open(pickle_path, 'rb') as f:
         clips = pickle.load(f)
         
-    min_src_frames = int(1.0 * src_fps)
+    min_src_frames = int(1.0 * SYNTH_META['src_fps'])
     clips = {k: v for k, v in clips.items() if str(v.get('text', '')).strip() and v.get('num_frames', 0) >= min_src_frames}
-    groups = group_by_signer(clips, dataset)
+    groups = group_by_signer(clips, DATASET)
     groups = {sid: lst for sid, lst in groups.items() if len(lst) >= MIN_POOL_SIZE}
     n_usable = sum(len(v) for v in groups.values())
     k_avg = (k_range[0] + k_range[1]) / 2.0
@@ -486,8 +461,8 @@ def synthesize_split(
     # broadcasts have only 2-3 clips each) any multiplier above 1 saturates the K! permutation
     # space and biases training toward duplicated streams.
     n_streams = max(1, int(round(n_usable / k_avg)))
-    print(f'[{dataset}/{split}] usable clips: {n_usable}, signer-pure groups: {len(groups)} -> {n_streams} streams')
-    if not groups: raise RuntimeError(f'No signer groups for {dataset}/{split}')
+    print(f'[{DATASET}/{split}] usable clips: {n_usable}, signer-pure groups: {len(groups)} -> {n_streams} streams')
+    if not groups: raise RuntimeError(f'No signer groups for {DATASET}/{split}')
 
     rng = np.random.default_rng(base_seed)
     signer_ids = list(groups.keys())
@@ -497,7 +472,7 @@ def synthesize_split(
     for i in tqdm(range(n_streams), desc=f'synth {split}'):
         stream_rng = np.random.default_rng([base_seed, i])
         sid = signer_ids[int(rng.integers(0, len(signer_ids)))]
-        poses, cues, prov = synth_one_stream(stream_rng, groups[sid], clips, src_fps, pause, k_range)
+        poses, cues, prov = synth_one_stream(stream_rng, groups[sid], clips, SYNTH_META['src_fps'], pause, k_range)
         if not cues: continue
         stream_id = f'{split}_{i:05d}'
         write_pose(out_pose_dir, stream_id, poses)
@@ -510,7 +485,6 @@ def synthesize_split(
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--dataset', required=True, choices=['PHOENIX', 'CSL'])
     p.add_argument('--out_root', required=True)
     p.add_argument('--bobsl_gap_stats', default='data_synth/stats/bobsl_gap_stats.json',
                    help='JSON of BOBSL manual-aligned pause statistics; if missing, use fallback.')
@@ -539,14 +513,14 @@ def main():
     subset: Dict[str, List[str]] = {}
     full_manifest: Dict[str, List[dict]] = {}
     for split, seed in splits_cfg:
-        ids, m = synthesize_split(args.dataset, split, out_pose_dir, out_vtt_dir, seed, pause, k_range)
+        ids, m = synthesize_split(split, out_pose_dir, out_vtt_dir, seed, pause, k_range)
         subset[split] = ids
         full_manifest[split] = m
 
     (out_root / 'subset2episode.json').write_text(json.dumps(subset, indent=2))
     (out_root / 'manifest.json').write_text(json.dumps({
-        'dataset': args.dataset,
-        'src_meta': {k: (str(v) if isinstance(v, Path) else v) for k, v in DATASET_META[args.dataset].items()},
+        'dataset': DATASET,
+        'src_meta': {k: (str(v) if isinstance(v, Path) else v) for k, v in SYNTH_META.items()},
         'target_fps': FPS,
         # Drop the raw samples arrays from manifest -- store only the summary statistics that
         # describe the empirical pause distribution actually used during synthesis.

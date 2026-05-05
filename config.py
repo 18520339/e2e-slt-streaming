@@ -34,36 +34,33 @@ MBART_NAME = 'facebook/mbart-large-cc25'
 #                from the MSKA SLT release (gloss/CTC heads stripped at load-time).
 # MSKA_CKPT auto-resolves to the per-dataset checkpoint; override via env var if needed.
 BACKBONE = os.environ.get('BACKBONE', 'cosign').lower()
-if BACKBONE not in ('cosign', 'mska'):
-    raise ValueError(f"Unknown BACKBONE={BACKBONE!r}; expected 'cosign' or 'mska'")
-
+if BACKBONE not in ('cosign', 'mska'): raise ValueError(f"Unknown BACKBONE={BACKBONE!r}; expected 'cosign' or 'mska'")
 if DATASET == 'BOBSL':
     DATA_ROOT = Path('data/BOBSL')
     POSE_ROOT = DATA_ROOT / 'bobsl_dwpose' # Directory with pose .npy files
     SUBSET_JSON = DATA_ROOT / 'original_data/metadata/subset2episode.json' # subset2episode.json for Train/val/test splits
     VTT_DIR = DATA_ROOT / 'automatic_annotations/signing_aligned_subtitles/auto_sat_aligned' # Directory with .vtt files
     TGT_LANG = 'en_XX'
-    TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_tokenizer_bobsl'
-    TRIMMED_MBART_DIR = 'captioners/trimmed_mbart_bobsl'
-    WIDTH, HEIGHT = 444, 444
+    TRIMMED_MBART_DIR = TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_mbart_bobsl'
+    WIDTH, HEIGHT, FPS = 444, 444, 12.5  # Downsampled FPS from original 25fps
 elif DATASET == 'PHOENIX':
     DATA_ROOT = Path('data/synth/phoenix')
     POSE_ROOT = DATA_ROOT / 'poses'
     SUBSET_JSON = DATA_ROOT / 'subset2episode.json'
     VTT_DIR = DATA_ROOT / 'vtt'
     TGT_LANG = 'de_DE'
-    TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_tokenizer_phoenix'
-    TRIMMED_MBART_DIR = 'captioners/trimmed_mbart_phoenix'
-    WIDTH, HEIGHT = 210, 260   # PHOENIX-2014T native frame size
+    TRIMMED_MBART_DIR = TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_mbart_phoenix'
+    WIDTH, HEIGHT, FPS = 210, 260, 12.5  # Downsampled FPS from original 25fps
+    SYNTH_META = {'src_fps': 25.0, 'src_w': WIDTH, 'src_h': HEIGHT, 'pickle_dir': Path('data/Phoenix-2014T'), 'pickle_prefix': 'Phoenix-2014T'}
 elif DATASET == 'CSL':
     DATA_ROOT = Path('data/synth/csl')
     POSE_ROOT = DATA_ROOT / 'poses'
     SUBSET_JSON = DATA_ROOT / 'subset2episode.json'
     VTT_DIR = DATA_ROOT / 'vtt'
     TGT_LANG = 'zh_CN'
-    TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_tokenizer_csl'
-    TRIMMED_MBART_DIR = 'captioners/trimmed_mbart_csl'
-    WIDTH, HEIGHT = 512, 512   # Padded reference for CSL-Daily
+    TRIMMED_MBART_DIR = TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_mbart_csl'
+    WIDTH, HEIGHT, FPS = 512, 512, 15   # Padded reference for CSL-Daily
+    SYNTH_META = {'src_fps': 30.0, 'src_w': WIDTH, 'src_h': HEIGHT, 'pickle_dir': Path('data/CSL-Daily')    , 'pickle_prefix': 'CSL-Daily'}
 elif DATASET == 'H2S': # How2Sign streaming benchmark. Stream timing comes from the realigned CSV (real ASL inter-sentence gaps)
     # Pose data adapted from OpenPose-137 via data_synth/op_to_coco133.py into COCO-WholeBody-133 layout used by the rest of the pipeline.
     DATA_ROOT = Path('data/synth/h2s')
@@ -71,28 +68,17 @@ elif DATASET == 'H2S': # How2Sign streaming benchmark. Stream timing comes from 
     SUBSET_JSON = DATA_ROOT / 'subset2episode.json'
     VTT_DIR = DATA_ROOT / 'vtt'
     TGT_LANG = 'en_XX'
-    TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_tokenizer_h2s'
-    TRIMMED_MBART_DIR = 'captioners/trimmed_mbart_h2s'
-    WIDTH, HEIGHT = 1280, 720  # How2Sign realigned RGB native canvas (OP coords are pixels on this canvas)
+    TRIMMED_MBART_DIR = TRIMMED_TOKENIZER_DIR = 'captioners/trimmed_mbart_h2s'
+    WIDTH, HEIGHT, FPS = 1280, 720, 15  # How2Sign realigned RGB native canvas (OP coords are pixels on this canvas)
+    SYNTH_META = {'src_fps': 30.0, 'src_w': WIDTH, 'src_h': HEIGHT, 'src_root': Path('data/How2Sign')}
 else: raise ValueError(f"Unknown DATASET={DATASET!r}; expected one of BOBSL/PHOENIX/CSL/H2S")
 
-# -- Per-dataset native canvas/fps used by the synthesizer
-DATASET_META = {
-    'PHOENIX': {'src_fps': 25.0, 'src_w': 210, 'src_h': 260, 'pickle_dir': Path('data/Phoenix-2014T'), 'pickle_prefix': 'Phoenix-2014T'},
-    'CSL':     {'src_fps': 30.0, 'src_w': 512, 'src_h': 512, 'pickle_dir': Path('data/CSL-Daily')    , 'pickle_prefix': 'CSL-Daily'},
-    'H2S':     {'src_fps': 30.0, 'src_w': 1280, 'src_h': 720, 'src_root': Path('data/How2Sign')},
-}
-
 # MSKA checkpoint auto-resolution per dataset. Override with MSKA_CKPT env var.
-_MSKA_CKPT_DEFAULTS = {
-    'PHOENIX': 'checkpoints/mska_phoenix.pth',
-    'CSL':     'checkpoints/mska_csl.pth',
-}
+_MSKA_CKPT_DEFAULTS = {'PHOENIX': 'checkpoints/mska_phoenix.pth', 'CSL':     'checkpoints/mska_csl.pth'}
 MSKA_CKPT = os.environ.get('MSKA_CKPT', _MSKA_CKPT_DEFAULTS.get(DATASET, ''))
 
 # -- Dataset and Dataloader Configuration -----------------------------------
-FPS = 12.5 # Downsampled FPS from original 25fps
-MIN_SUB_DURATION = 1.0 # From LiTFiC, seconds
+MIN_SUB_DURATION = 1.0  # From LiTFiC, seconds
 MAX_SUB_DURATION = 20.0 # From LiTFiC, seconds
 WINDOW_DURATION_SECONDS = 15 # As per https://aclanthology.org/2025.acl-srw.93.pdf
 
