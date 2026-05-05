@@ -16,6 +16,7 @@ Reports per split:
 Usage:
     DATASET=PHOENIX python -m data_synth.dataset_stats --root data/synth/phoenix --out data_synth/stats/phoenix_stats.json
     DATASET=CSL     python -m data_synth.dataset_stats --root data/synth/csl     --out data_synth/stats/csl_stats.json
+    DATASET=H2S     python -m data_synth.dataset_stats --root data/synth/h2s     --out data_synth/stats/h2s_stats.json
 
 If both manifest.json and per-stream pose .npy files exist, the script also reports the BOBSL-style
 "signing density" (frac of frames that fall inside any cue) computed exactly from the cues.
@@ -144,17 +145,21 @@ def main():
     sub = json.loads((root / 'subset2episode.json').read_text())
     manifest = json.loads((root / 'manifest.json').read_text())
 
-    # signers per split (from manifest provenance)
+    # signers per split (from manifest provenance). PHOENIX/CSL synth records each stream's
+    # signer ID; H2S has no signer concept (groups by VIDEO_ID), so the .get('signer')
+    # entries are missing and `n_signers` rolls up to 0 — that's intentional and correct.
     signers_per_split: Dict[str, set] = {'train': set(), 'val': set(), 'test': set()}
     if 'streams' in manifest:
         for split, lst in manifest['streams'].items():
-            for s in lst: signers_per_split[split].add(s.get('signer'))
+            for s in lst:
+                sig = s.get('signer')
+                if sig is not None: signers_per_split[split].add(sig)
 
     bpe_tokenizer = maybe_load_bpe_tokenizer()
     out = {'dataset': DATASET, 'splits': {}}
     print(f'==== {DATASET} synthetic streaming benchmark ====')
-    if bpe_tokenizer is None:
-        print('(no trimmed-mBART tokenizer found; reporting only word/char-level vocab)')
+    if bpe_tokenizer is None: print('(no trimmed-mBART tokenizer found; reporting only word/char-level vocab)')
+    
     for split in ['train', 'val', 'test']:
         ids = sub.get(split, [])
         s = stats_for_split(root, split, ids, bpe_tokenizer=bpe_tokenizer)
