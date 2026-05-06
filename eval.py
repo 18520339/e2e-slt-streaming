@@ -60,7 +60,7 @@ class DataArguments:
     # Metrics/Ranking
     ranking_temperature: float = field(default=2.0, metadata={'help': 'Exponent T in caption score normalization by length^T'})
     alpha: float = field(default=0.3, metadata={'help': 'Ranking policy: joint_score = alpha * (caption_score / len(tokens)^T) + (1 - alpha) * det_score'})
-    top_k: int = field(default=20, metadata={'help': 'Keep top k events during evaluation for metrics computation'})
+    top_k: int = field(default=10, metadata={'help': 'Keep top k events during evaluation for metrics computation'})
     temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
     soda_recursion_limit: int = field(default=0, metadata={'help': 'Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations'})
 

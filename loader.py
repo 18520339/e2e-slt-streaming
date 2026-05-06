@@ -257,18 +257,24 @@ class DVCDataset(Dataset):
             )['input_ids'].squeeze(0) # Remove batch dim
 
         else: # No valid subtitles in window
-            # Critical: paragraph_tokens / masked_paragraph_tokens are fed straight into an
-            # nn.Embedding lookup in pdvc.py:_encode_text. torch.empty returns UNINITIALIZED
-            # memory — int64 garbage that can be negative or > vocab_size, causing a CUDA
-            # gather "index out of bounds" assertion. Fill with pad_token_id so the lookup
-            # is always valid; the downstream attention mask (token != pad_token_id) zeroes
-            # out the contribution to the pooled embedding regardless.
-            pad_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+            # Two CUDA OOB hazards if we naively fill paragraph_tokens with garbage / all-pad:
+            #   (1) torch.empty -> uninitialized int64 -> embedding gather OOB in pdvc._encode_text
+            #   (2) torch.full(pad_id) -> shift_tokens_right computes index_of_eos = -1 (since
+            #       sum(non_pad) - 1 = -1) -> gather OOB in mbart's TextDecoder (gfslt_stage1).
+            # Fix: tokenize the empty string so paragraph_tokens has the canonical mBART layout
+            # [lang_code, eos, pad, pad, ...]. That gives:
+            #   - valid embedding indices for (1)
+            #   - sum(non_pad) >= 1 so shift_tokens_right finds a real index for (2)
+            #   - the attention mask still masks out the pad portion downstream
+            empty_ids = self.tokenizer(
+                '', add_special_tokens=True, truncation=True,
+                padding='max_length', max_length=self.max_window_tokens, return_tensors='pt',
+            )['input_ids'].squeeze(0)
             labels['class_labels'] = torch.empty(0, dtype=torch.long)
             labels['boxes'] = torch.empty(0, 2, dtype=torch.float)
             labels['seq_tokens'] = torch.empty(0, self.max_event_tokens, dtype=torch.long)
-            labels['paragraph_tokens'] = torch.full((self.max_window_tokens,), pad_id, dtype=torch.long)
-            labels['masked_paragraph_tokens'] = torch.full((self.max_window_tokens,), pad_id, dtype=torch.long)
+            labels['paragraph_tokens'] = empty_ids
+            labels['masked_paragraph_tokens'] = empty_ids.clone()
 
         poses_tensor = torch.from_numpy(window_poses).float()  # (T, K, 3)
         return video_id, window_start_frame, window_end_frame, poses_tensor, frame_mask, labels
