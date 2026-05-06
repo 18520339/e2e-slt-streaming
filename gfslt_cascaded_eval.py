@@ -86,7 +86,7 @@ class EvalArguments: # Arguments for evaluation
     gfslt_max_new_tokens: int = field(default=40)
     gfslt_num_beams: int = field(default=1)
     skip_gfslt: bool = field(default=False, metadata={'help': 'Skip GFSLT captioning for fast localization-only eval'})
-    max_events_per_window: int = field(default=10, metadata={'help': 'Max events per window to caption (for speed)'})
+    max_events_per_window: int = field(default=20, metadata={'help': 'Max events per window to caption (for speed)'})
     use_fp16: bool = field(default=False, metadata={'help': 'Use FP16 for faster inference'})
     aggregation_mode: str = field(default='video', metadata={
         'help': f"How to aggregate caption pairs per IoU threshold. Same metric keys across modes: "
