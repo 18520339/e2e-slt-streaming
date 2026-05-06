@@ -1,6 +1,16 @@
 # Synthetic streaming SL benchmarks for StreamSLST
 
-Synthesize streaming sign-language datasets from offline pre-segmented pose pickles for **PHOENIX-2014T** (DGS, German) and **CSL-Daily** (CSL, Chinese), in BOBSL-compatible layout.
+Synthesize streaming sign-language datasets from offline pre-segmented pose pickles for **PHOENIX-2014T** (DGS, German) and **CSL-Daily** (CSL, Chinese), and from real signer-aligned timestamps for **How2Sign** (ASL, English), all in BOBSL-compatible layout.
+
+Two distinct synthesis pathways:
+
+| Dataset | Source | Stream construction | Bridges | Gap distribution |
+|---|---|---|---|---|
+| PHOENIX-2014T | Per-clip pickles, signer-known | Same-signer concatenation; *K* from BOBSL 60-s window stat (§4.8) | Hermite C¹ (§4.5) | Empirical BOBSL inter-subtitle gaps (§4.6) |
+| CSL-Daily | Per-clip pickles, signer-known | Same-signer concatenation; *K* from BOBSL 60-s window stat | Hermite C¹ | Empirical BOBSL inter-subtitle gaps |
+| How2Sign | Per-clip OpenPose-137 JSONs + realigned CSV | Per-`VIDEO_ID` concatenation on the **real** original-video timeline | Linear C⁰ (no co-articulation simulation) | **Real H2S realigned gaps** (optionally clamped via `--max_gap_s`) |
+
+Pick your benchmark via `DATASET={PHOENIX,CSL,H2S}`. PHOENIX/CSL are documented in §1–§10; the **How2Sign-specific path** is documented in §H2S.
 
 ## Why synthetic streams
 
@@ -407,8 +417,8 @@ python -m data_synth.analyze_bobsl_gaps \
 # If skipped, the synthesizer falls back to an analytic distribution that emulates the same shape.
 
 # 1. Synthesize streams (no count args; everything derived from data + BOBSL stats).
-python -m data_synth.synthesize_streams --dataset PHOENIX --out_root data/synth/phoenix --seed 42
-python -m data_synth.synthesize_streams --dataset CSL     --out_root data/synth/csl  --seed 43
+DATASET=PHOENIX python -m data_synth.synthesize_streams --out_root data/synth/phoenix # --k_range 3 5
+DATASET=CSL python -m data_synth.synthesize_streams --out_root data/synth/csl  # --k_range 3 5
 
 # 2. Visualize a few streams (reads DATASET env to pick canvas; renders the 77 model-input keypoints
 #    with auto-fit window so out-of-frame pose outliers don't push the body off-screen).
@@ -439,27 +449,130 @@ K is derived from a **60-second** sliding window of BOBSL ($= 4 W$, the model's 
 | PHOENIX train | 564 | 387 broadcasts | 6.99 | 7.67 | 41.6 / 65.2 | 0.00 / 2.00 | 0.715 |
 | PHOENIX val | 27 | 25 | 0.10 | 2.07 | 13.0 / 20.8 | 0.00 / 1.10 | 0.515 |
 | PHOENIX test | 38 | 35 | 0.17 | 2.50 | 15.1 / 25.8 | 0.00 / 2.00 | 0.522 |
-| CSL train | 1467 | 10 P-ids | 21.67 | 10.38 | 50.2 / 82.4 | 0.00 / 2.00 | 0.716 |
-| CSL val | 86 | 10 | 1.43 | 10.95 | 55.8 / 88.3 | 0.00 / 2.00 | 0.710 |
-| CSL test | 94 | 10 | 1.56 | 11.00 | 58.4 / 90.4 | 0.00 / 2.00 | 0.745 |
+| CSL train | _TBD_ | 10 P-ids | _TBD_ | _TBD_ | _TBD_ / _TBD_ | _TBD_ / _TBD_ | _TBD_ |
+| CSL val | _TBD_ | 10 | _TBD_ | _TBD_ | _TBD_ / _TBD_ | _TBD_ / _TBD_| _TBD_ |
+| CSL test | _TBD_ | 10 | _TBD_ | _TBD_ | _TBD_ / _TBD_ | _TBD_ / _TBD_| _TBD_ |
 
 Pause distribution matches the BOBSL empirical sample by construction (~74% of inter-clip joins have $\ell = 0$ and concatenate co-articulated, see §4.6). PHOENIX dev/test streams are shorter than train because per-broadcast clip pools on those splits are only ~2–3 clips — same-signer-per-stream caps $K$ at the pool size; the underlying biological signer count is 9 across all 629 broadcasts. CSL is unaffected (each of the 10 P-ids has hundreds of clips per split).
 
 ---
 
+# §H2S. How2Sign — real-CSV-timing synthesis pathway
+
+How2Sign uses a **different synthesis design** than PHOENIX/CSL. The PHOENIX/CSL streams are **synthetic by construction** — we derive both clip ordering and inter-clip gaps from BOBSL stats applied to per-clip pose pickles. How2Sign already ships with **realigned per-sentence timestamps** in the original-video timeline (`how2sign_realigned_<split>.csv`), so we preserve that real timing instead of resampling from BOBSL.
+
+## Source format
+
+How2Sign keypoints are released as **per-frame OpenPose-137 JSONs**, one folder per sentence clip:
+
+```
+data/How2Sign_<split>/
+├── how2sign_realigned_<split>.csv         # VIDEO_ID, SENTENCE_NAME, START_REALIGNED, END_REALIGNED, SENTENCE
+└── json/<SENTENCE_NAME>/                  # one folder per clip
+    └── <prefix>_<framenum>_keypoints.json # per-frame OpenPose 137-kp JSON (body_25 + face_70 + 2×hand_21)
+```
+
+OpenPose-137 is converted **losslessly** to COCO-WholeBody-133 (the layout the rest of the pipeline expects) via [`op2coco.py`](op2coco.py) — body indices reorder body_25→COCO-17 + COCO-feet, face drops the 2 pupil points, hands map directly. No new pose extraction required.
+
+## Stream construction
+
+Each `VIDEO_ID` becomes one stream (sentences ordered by `START_REALIGNED`). The synthesized stream timeline starts at the first sentence's onset (no leading BG); each subsequent gap is computed directly from the CSV — `gap_i = max(0, START[i+1] − END[i])` — and bridged with a **linear C⁰ interpolation** between the last frame of clip *i* and the first frame of clip *i+1*. No Hermite tangent matching: H2S already exhibits real signing-rhythm gaps; injecting fake clip-end momentum would distort that distribution.
+
+`trim_rest` is still applied per clip — H2S sentence clips are trimmed-per-sentence and end on natural rest poses, which would otherwise create a "hands-down → hands-up" trivial cue at every seam. Trimming removes that leakage while preserving co-articulation when adjacent sentences happen to abut.
+
+```
+S  =  [ c_1 ][ Δ_1 ][ c_2 ][ Δ_2 ] ... [ c_K ]
+       \___/  \___/  \___/  \___/       \___/
+        clip   gap    clip   gap         clip
+```
+
+where `|Δ_i| = round(min(START[i+1] − END[i], max_gap_s) · FPS)` (see below).
+
+## `--max_gap_s`: capping over-long instructional dead time
+
+How2Sign is instructional YouTube content: signers pause to read notes, gather thoughts, or gesture for emphasis. Inter-cue gaps in the realigned CSV regularly hit 10–30 s and occasionally more. With the standard 15-second training window, those gaps mean a randomly-placed window often falls entirely in BG → 0 events → the loader's random-window sampler exhausts `max_tries` and falls back to `_sample_densest_window`. The fallback path is correct but produces a noisy distribution and triggers fallback-warning spam.
+
+`--max_gap_s` clamps each `gap_i` to a maximum (suggested 8 or 10 s). Gap-internal silence below the cap is preserved; only over-long dead time is truncated. Cue-internal pose data is never modified. The cap is a **benchmark-design choice** — not a synthesis artefact — and is recorded in `manifest.json` for provenance. Default `None` = no cap (faithful to the realigned CSV).
+
+## Layout & switching
+
+H2S synth output mirrors the BOBSL/synth contract:
+```
+data/synth/h2s/
+├── poses/<VIDEO_ID>.npy            # (T, 133, 3) float32 at 12.5 fps, NATIVE pixel coords (1280×720)
+├── vtt/<VIDEO_ID>.vtt              # WEBVTT, one cue per sentence
+├── subset2episode.json             # accumulated across split runs
+├── manifest.json                   # unified across splits (matches PHOENIX/CSL convention)
+├── manifest_train.json             # per-split debug dumps with full per-stream metadata
+├── manifest_val.json
+└── manifest_test.json
+```
+
+Switch at runtime via `DATASET=H2S`. `config.py` resolves `WIDTH×HEIGHT = 1280×720` (H2S RGB native canvas), `TGT_LANG='en_XX'`, and the trimmed tokenizer / mBART paths to `captioners/trimmed_*_h2s/`.
+
+## H2S workflow
+
+```bash
+# 1. Synthesize per split (run independently per split as you download data)
+python -m data_synth.synthesize_h2s --src_root data/How2Sign_train --split train --out_root data/synth/h2s --max_gap_s 10
+python -m data_synth.synthesize_h2s --src_root data/How2Sign_val   --split val   --out_root data/synth/h2s --max_gap_s 10
+python -m data_synth.synthesize_h2s --src_root data/How2Sign_test  --split test  --out_root data/synth/h2s --max_gap_s 10
+# Pose-cache directory data/How2Sign_pose_cache populates on the first run; later runs skip JSON parsing.
+
+# 2. Visualize a stream (sanity check)
+DATASET=H2S python -m data_synth.visualize_stream \
+    --pose data/synth/h2s/poses/<VIDEO_ID>.npy \
+    --vtt  data/synth/h2s/vtt/<VIDEO_ID>.vtt --out data_synth/examples/h2s_demo.mp4
+
+# 3. Trim mBART tokenizer + model for English (en_XX) on H2S vocabulary
+DATASET=H2S python -m captioners.trim_mbart
+
+# 4. BOBSL-paper-style dataset stats
+DATASET=H2S python -m data_synth.dataset_stats --root data/synth/h2s --out data_synth/stats/h2s_stats.json
+```
+
+## Differences from PHOENIX/CSL pathway (summary)
+
+| Aspect | PHOENIX/CSL | How2Sign |
+|---|---|---|
+| Source | per-clip pickles (already 133-kp COCO) | per-frame OpenPose-137 JSONs (lossless conversion) |
+| Grouping | same-signer per stream | per-`VIDEO_ID` (signer concept absent in CSV) |
+| Stream timeline | synth-derived; BOBSL 60-s window stat picks *K* | original-video timeline preserved |
+| Gap distribution | empirical BOBSL inter-subtitle gaps (~74% zeros) | real H2S realigned gaps (often 10–30 s) |
+| Bridges | Hermite C¹ (matches clip-end velocities) | Linear C⁰ (no fake momentum) |
+| BG_pre / BG_post | sampled from positive-only BOBSL gaps | none — stream begins at first cue, ends at last cue |
+| Phantom clips | yes (animate BG with same-signer spare clips) | no |
+| Cap parameter | none | `--max_gap_s` (optional; clamps long source gaps) |
+| Native canvas | 210×260 (PHOENIX) / 512×512 (CSL) | 1280×720 |
+
+## Resulting H2S benchmark sizes
+
+Run `DATASET=H2S python -m data_synth.dataset_stats --root data/synth/h2s --out data_synth/stats/h2s_stats.json` after synthesizing all three splits to populate the table:
+
+| split | streams | hours | cues / stream | stream dur p50 / p90 (s) | pause med / p90 (s) | density |
+|---|---:|---:|---:|---:|---:|---:|
+| H2S train | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| H2S val   | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+| H2S test  | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+
+(Numbers depend on the chosen `--max_gap_s`; record the cap in your benchmark protocol.)
+
+---
+
 # 11. Reproducibility
 
-- Per-stream RNG is `np.random.default_rng([base_seed, stream_idx])` so re-running with the same `--seed` reproduces every stream byte-for-byte.
-- Default seeds: train=42, val=43, test=44. Override via `--seed`.
-- `manifest.json` records, per stream: chosen clip names, phantom clip names, pause durations sampled, signer ID, $K$, total stream duration. Dataset can be reconstructed from clip pickles + manifest alone.
+- **PHOENIX/CSL**: per-stream RNG is `np.random.default_rng([base_seed, stream_idx])` so re-running with the same `--seed` reproduces every stream byte-for-byte. Default seeds: train=42, val=43, test=44. Override via `--seed`. The dataset's `manifest.json` records per stream: chosen clip names, phantom clip names, pause durations sampled, signer ID, *K*, total stream duration. Dataset can be reconstructed from clip pickles + manifest alone.
+- **H2S**: synthesis is deterministic from the input CSV — no randomness. The unified `manifest.json` records per stream: VIDEO_ID, sentence IDs in order, total cues, total duration; the per-split `manifest_<split>.json` files preserve full provenance (`max_gap_s`, source FPS, target FPS) for the run that produced them.
 
 ---
 
 # Files
 
-- `synthesize_streams.py` — main pipeline (Algorithms 1 + 2)
-- `analyze_bobsl_gaps.py` — writes `bobsl_gap_stats.json` (summary + K-range stats) and `bobsl_gap_samples.npy` (full empirical gap array consumed by the synthesizer)
+- `synthesize_streams.py` — PHOENIX/CSL pipeline (Algorithms 1 + 2; per-clip pickle source, BOBSL-derived gaps)
+- `synthesize_h2s.py` — How2Sign pipeline (real-CSV-timing concatenation with optional `--max_gap_s`); see §H2S
+- `op2coco.py` — OpenPose-137 → COCO-WholeBody-133 lossless mapping + per-clip pose loader with on-disk cache (used by `synthesize_h2s.py`)
+- `analyze_bobsl_gaps.py` — writes `bobsl_gap_stats.json` (summary + K-range stats) and `bobsl_gap_samples.npy` (full empirical gap array consumed by `synthesize_streams.py`)
 - `bobsl_gap_stats.json` / `bobsl_gap_samples.npy` — produced by the above; both auto-detected by `synthesize_streams.py`
 - `visualize_stream.py` — renders the 77 model-input keypoints as MP4 with PIL CJK subtitle overlay; segments labelled `[BG/PAUSE]` vs the subtitle text so phases are visually distinguishable
-- `dataset_stats.py` — BOBSL-paper-style stats; reports word vocab + BPE vocab side by side
+- `dataset_stats.py` — BOBSL-paper-style stats; reports word vocab + BPE vocab side by side; consumes the unified `manifest.json`
 - `verify_synth.py` — round-trip sanity check (load → normalize → threshold → parse_vtt)
