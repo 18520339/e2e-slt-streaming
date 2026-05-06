@@ -88,6 +88,11 @@ class EvalArguments: # Arguments for evaluation
     skip_gfslt: bool = field(default=False, metadata={'help': 'Skip GFSLT captioning for fast localization-only eval'})
     max_events_per_window: int = field(default=10, metadata={'help': 'Max events per window to caption (for speed)'})
     use_fp16: bool = field(default=False, metadata={'help': 'Use FP16 for faster inference'})
+    aggregation_mode: str = field(default='video', metadata={
+        'help': f"How to aggregate caption pairs per IoU threshold. Same metric keys across modes: "
+                f"'corpus' (default; pool all pairs -> sacrebleu corpus). "
+                f"'window' (corpus per window, mean across windows; linear). "
+                f"'video' (group windows by video_id, corpus per video, mean across videos)."})
 
 
 # ======================== Padding Utility ========================
@@ -128,6 +133,7 @@ class MultiStageEvaluator:
         detection_threshold: float = 0.1, max_new_tokens: int = 64,
         num_beams: int = 1, skip_gfslt: bool = False,
         max_events_per_window: int = 5, use_fp16: bool = True,
+        aggregation_mode: str = 'video',
     ):
         self.detr_model = detr_model.eval().to(device)
         self.gfslt_model = gfslt_model.eval().to(device) if not skip_gfslt else None
@@ -147,6 +153,7 @@ class MultiStageEvaluator:
         self.skip_gfslt = skip_gfslt
         self.max_events_per_window = max_events_per_window
         self.use_fp16 = use_fp16
+        self.aggregation_mode = aggregation_mode
         self.window_size = int(WINDOW_DURATION_SECONDS * FPS)  # 15s * 12.5fps = 187 frames
         
         
@@ -314,6 +321,7 @@ class MultiStageEvaluator:
         '''
         # Collect all predictions and ground truth
         all_pred_events: List[List[Tuple[float, float]]] = []
+        all_video_ids: List[str] = []  # one per window, for aggregation_mode='video'
         all_gfslt_captions: List[List[str]] = []
         all_detr_captions: List[List[str]] = []
         all_gt_events: List[List[Tuple[float, float]]] = []
@@ -379,6 +387,8 @@ class MultiStageEvaluator:
             all_detr_captions.extend(batch_detr_caps_local)
             all_gt_events.extend(batch_gt_events_local)
             all_gt_captions.extend(batch_gt_caps_local)
+            # collate_fn keeps a separate `video_ids` tuple on the batch dict (one per window).
+            all_video_ids.extend(batch.get('video_ids', [None] * len(labels)))
 
         # Compute metrics via shared aggregator. Two caption sources -> two calls
         # with different prefixes; localization computed once on the first call.
@@ -387,11 +397,13 @@ class MultiStageEvaluator:
             all_pred_events, all_gfslt_captions, all_gt_events, all_gt_captions,
             temporal_iou_thresholds=iou_thresholds, prefix='gfslt',
             include_localization=True, include_paragraph=True, include_segment=True,
+            aggregation_mode=self.aggregation_mode, batch_video_ids=all_video_ids,
         ))
         metrics.update(aggregate_metrics(
             all_pred_events, all_detr_captions, all_gt_events, all_gt_captions,
             temporal_iou_thresholds=iou_thresholds, prefix='detr',
             include_localization=False, include_paragraph=True, include_segment=False,
+            aggregation_mode=self.aggregation_mode, batch_video_ids=all_video_ids,
         ))
         return metrics
 
@@ -525,6 +537,7 @@ def main():
         skip_gfslt=eval_args.skip_gfslt,
         max_events_per_window=eval_args.max_events_per_window,
         use_fp16=eval_args.use_fp16,
+        aggregation_mode=eval_args.aggregation_mode,
     )
     os.makedirs(eval_args.output_dir, exist_ok=True) # Create output directory
     

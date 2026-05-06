@@ -65,6 +65,8 @@ def compute_metrics(
 	temporal_iou_thresholds: Sequence[float] = (0.3, 0.5, 0.7, 0.9),
     tokenizer: AutoTokenizer = None,
     soda_recursion_limit: int = 0, # Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations
+    aggregation_mode: str = 'corpus', # 'corpus' | 'window' | 'video'. Same metric keys regardless.
+    eval_windows: list = None,  # dataset.eval_windows list, in dataloader order. Required for aggregation_mode='video'.
 ) -> Dict[str, float]:
     predictions = ModelOutput(
         logits=torch.as_tensor(evaluation_results.predictions[0]),
@@ -87,9 +89,25 @@ def compute_metrics(
         ranking_temperature=ranking_temperature, alpha=alpha, top_k=top_k,
     )
     batch_gt_events, batch_gt_captions = extract_gt_per_window(evaluation_results.label_ids, tokenizer)
+    # Only build batch_video_ids when actually needed (aggregation_mode='video'). Corpus and
+    # window modes ignore it, so don't risk a length-mismatch crash on those code paths.
+    # eval_windows is dataset.eval_windows (sequential dataloader order); align to the actual
+    # number of predicted windows, not to label_ids (Trainer's label_ids container length can
+    # differ from the per-window prediction count depending on how it concatenated batches).
+    batch_video_ids = None
+    if aggregation_mode == 'video' and eval_windows is not None:
+        n = len(batch_pred_events)
+        ews = list(eval_windows)[:n]
+        batch_video_ids = [w.get('video_id') if isinstance(w, dict) else None for w in ews]
+        if len(batch_video_ids) < n:
+            print(f'[compute_metrics] WARNING: only {len(batch_video_ids)} eval_windows for {n} predictions; '
+                  f'aggregation_mode=video may misalign — falling back to corpus mode.')
+            aggregation_mode = 'corpus'
+            batch_video_ids = None
     return aggregate_metrics(
         batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions,
         temporal_iou_thresholds=temporal_iou_thresholds,
         prefix='', include_localization=True, include_paragraph=True, include_segment=True,
         soda_recursion_limit=soda_recursion_limit,
+        aggregation_mode=aggregation_mode, batch_video_ids=batch_video_ids,
     )

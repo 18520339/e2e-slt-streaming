@@ -63,6 +63,11 @@ class DataArguments:
     top_k: int = field(default=10, metadata={'help': 'Keep top k events during evaluation for metrics computation'})
     temporal_iou_thresholds: Tuple[float, float, float, float] = field(default=(0.3, 0.5, 0.7, 0.9))
     soda_recursion_limit: int = field(default=0, metadata={'help': 'Increase recursion limit for SODA_c DP if needed, 0 to disable for faster calculations'})
+    aggregation_mode: str = field(default='video', metadata={
+        'help': f"How to aggregate caption pairs into one score per IoU threshold. Same metric KEY NAMES across modes; only internal compute changes. Options: "
+                f"'corpus' (ActivityNet default; pool ALL pairs -> sacrebleu corpus, geometric-mean over n-grams, non-linear when combining splits); "
+                f"'window' (corpus-text-metrics per window then mean; linear-aggregating); "
+                f"'video' (group windows by video_id, corpus per video, then mean across videos)."})
 
 
 @dataclass
@@ -187,6 +192,8 @@ def main():
                 temporal_iou_thresholds=data_args.temporal_iou_thresholds,
                 tokenizer=tokenizer,
                 soda_recursion_limit=data_args.soda_recursion_limit,
+                aggregation_mode=data_args.aggregation_mode,
+                eval_windows=val_dataset.eval_windows,
             ),
         )
         val_metrics = eval_trainer.evaluate(metric_key_prefix='val')
@@ -222,6 +229,8 @@ def main():
                 temporal_iou_thresholds=data_args.temporal_iou_thresholds,
                 tokenizer=tokenizer,
                 soda_recursion_limit=data_args.soda_recursion_limit,
+                aggregation_mode=data_args.aggregation_mode,
+                eval_windows=test_dataset.eval_windows,
             ),
         )
         test_metrics = eval_trainer.evaluate(metric_key_prefix='test')

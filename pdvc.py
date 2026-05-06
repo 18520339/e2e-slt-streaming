@@ -354,7 +354,7 @@ if __name__ == '__main__':
     video_ids, start_frames, end_frames = batch['video_ids'], batch['window_start_frames'], batch['window_end_frames']
     pixel_values = batch['pixel_values'].to(device)
     pixel_mask = batch['pixel_mask'].to(device)
-    labels = [{k: v.to(device) for k, v in label.items()} for label in batch['labels']]
+    labels = [{k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in label.items()} for label in batch['labels']]
     
     print('Batch poses shape: ', pixel_values.shape)
     for video_id, start_frame, end_frame, events in zip(video_ids, start_frames, end_frames, labels):

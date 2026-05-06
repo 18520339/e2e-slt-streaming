@@ -235,6 +235,9 @@ def extract_gt_per_window(labels: List[Dict], tokenizer) -> Tuple[List[List[Tupl
 	return batch_gt_events, batch_gt_captions
 
 
+VALID_AGG_MODES = ('corpus', 'window', 'video')
+
+
 def aggregate_metrics(
 	batch_pred_events: List[List[Tuple[float, float]]],
 	batch_pred_captions: List[List[str]],
@@ -246,6 +249,8 @@ def aggregate_metrics(
 	include_paragraph: bool = True,
 	include_segment: bool = True,
 	soda_recursion_limit: int = 0,
+	aggregation_mode: str = 'corpus',
+	batch_video_ids: Optional[List[str]] = None,
 ) -> Dict[str, float]:
 	''' Compute precision/recall/F1 + dense captioning + paragraph + segment metrics.
 
@@ -271,23 +276,100 @@ def aggregate_metrics(
 		sys.setrecursionlimit(soda_recursion_limit)
 		dense_scores['soda_c'] = []
 
+	# Aggregation mode controls how per-window pairs roll up into one score per IoU threshold.
+	#   'corpus' (default, ActivityNet convention): pool ALL pairs across windows -> ONE corpus
+	#       sacrebleu / chrf / etc. Geometric mean over n-gram precisions; non-linear when
+	#       combining splits.
+	#   'window': compute corpus-text-metrics within EACH window's pair set, then mean across
+	#       windows (windows with no pairs are skipped). Linear-aggregating: combining splits
+	#       gives the size-weighted average.
+	#   'video':  group windows by video_id, compute corpus-text-metrics on the union of pairs
+	#       per video, then mean across videos. Closest to "per-sample BLEU averaged" intuition;
+	#       requires `batch_video_ids` (one entry per window, parallel to the four batch lists).
+	# Metric KEY NAMES are identical across modes — only the internal compute changes.
+	if aggregation_mode not in VALID_AGG_MODES:
+		raise ValueError(f"aggregation_mode must be one of {VALID_AGG_MODES}; got {aggregation_mode!r}")
+
+	# batch_video_ids is only consulted in video mode; ignore mismatches otherwise to keep the
+	# corpus / window code paths from crashing on unrelated upstream slicing quirks.
+	if aggregation_mode == 'video':
+		if batch_video_ids is None:
+			print("[aggregate_metrics] WARNING: aggregation_mode='video' but no batch_video_ids; falling back to corpus.")
+			aggregation_mode = 'corpus'
+		elif len(batch_video_ids) != len(batch_pred_events):
+			print(f"[aggregate_metrics] WARNING: batch_video_ids has {len(batch_video_ids)} entries vs "
+			      f"{len(batch_pred_events)} windows; falling back to corpus mode.")
+			aggregation_mode = 'corpus'
+			batch_video_ids = None
+	elif batch_video_ids is not None and len(batch_video_ids) != len(batch_pred_events):
+		batch_video_ids = None # Non-video mode: safe to ignore.
+
+
+	def _aggregate_text(per_window_pairs: List[Tuple[List[str], List[str]]]) -> Dict[str, float]:
+		# Run compute_text_metrics under the active aggregation mode and return a metric dict
+		if aggregation_mode == 'corpus':
+			pp_all = [p for pp, _ in per_window_pairs for p in pp]
+			rr_all = [r for _, rr in per_window_pairs for r in rr]
+			return compute_text_metrics(pp_all, rr_all)
+
+		# Build buckets: list of (pp_bucket, rr_bucket)
+		if aggregation_mode == 'window': buckets = [(pp, rr) for pp, rr in per_window_pairs if pp]
+		else: # video
+			by_vid: Dict[str, Tuple[List[str], List[str]]] = {}
+			for w_idx, (pp, rr) in enumerate(per_window_pairs):
+				if not pp: continue
+				vid = batch_video_ids[w_idx]
+				if vid not in by_vid: by_vid[vid] = ([], [])
+				by_vid[vid][0].extend(pp); by_vid[vid][1].extend(rr)
+			buckets = list(by_vid.values())
+   
+		if not buckets: return {k: 0.0 for k in ('bleu4', 'bleurt', 'rougeL', 'cider', 'meteor', 'chrf')}
+		per_bucket = [compute_text_metrics(pp, rr) for pp, rr in buckets]
+		out: Dict[str, float] = {}
+		for k in ('bleu4', 'bleurt', 'rougeL', 'cider', 'meteor', 'chrf'):
+			vals = [m[k] for m in per_bucket if k in m]
+			out[k] = float(np.mean(vals)) if vals else 0.0
+		return out
+
+
+	def _aggregate_soda(per_window_soda: List[float], window_video_ids: Optional[List[str]] = None) -> float:
+		# SODA_c is already a per-window score; aggregate it the same way as the text metrics
+		if not per_window_soda: return 0.0
+		if aggregation_mode in ('corpus', 'window'): return float(np.mean(per_window_soda))
+		# video mode: mean within each video, then mean across videos.
+		if window_video_ids is None or len(window_video_ids) != len(per_window_soda):
+			return float(np.mean(per_window_soda))
+
+		by_vid: Dict[str, List[float]] = {}
+		for vid, s in zip(window_video_ids, per_window_soda):
+			by_vid.setdefault(vid, []).append(s)
+		return float(np.mean([np.mean(v) for v in by_vid.values()])) if by_vid else 0.0
+
+
 	for tiou in temporal_iou_thresholds:
 		precs_at_tiou, recs_at_tiou = [], []
-		preds_at_tiou, refs_at_tiou = [], []
-		soda_f1s_at_tiou = []
+		per_window_pairs: List[Tuple[List[str], List[str]]] = []
+		soda_f1s_at_tiou: List[float] = []
+		# Track which windows actually contributed soda (parallel to soda list). For
+		# video-mode soda aggregation we keep a parallel video_ids list.
+		soda_video_ids: List[str] = []
 
-		for pred_events, pred_captions, gt_events, gt_captions in zip(batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions):
+		for w_idx, (pred_events, pred_captions, gt_events, gt_captions) in enumerate(
+			zip(batch_pred_events, batch_pred_captions, batch_gt_events, batch_gt_captions)
+		):
 			if include_localization: # Localization metrics (precision/recall per window)
 				p, r = precision_recall_at_tiou(pred_events, gt_events, tiou)
 				if p is not None and r is not None: # Skip windows where both GT and predictions are empty (p, r) = (None, None)
 					precs_at_tiou.append(p); recs_at_tiou.append(r)
 
-			# Dense captioning metrics (pred/gt pairs per window)
+			# Dense captioning pairs per window (matched at this IoU).
 			pp, rr = pairs_for_threshold(pred_events, pred_captions, gt_events, gt_captions, tiou)
-			preds_at_tiou.extend(pp); refs_at_tiou.extend(rr)
+			per_window_pairs.append((pp, rr))
 			if use_soda: # SODA_c-like storytelling score (DP over IoU-masked METEOR similarity)
-				if len(pred_events) == 0 or len(gt_events) == 0: soda_f1s_at_tiou.append(0.0)
-				else: soda_f1s_at_tiou.append(compute_soda_at_tiou(pred_events, pred_captions, gt_events, gt_captions, tiou))
+				if len(pred_events) == 0 or len(gt_events) == 0: s = 0.0
+				else: s = compute_soda_at_tiou(pred_events, pred_captions, gt_events, gt_captions, tiou)
+				soda_f1s_at_tiou.append(s)
+				if batch_video_ids is not None: soda_video_ids.append(batch_video_ids[w_idx])
 
 		if include_localization: # Localization metrics
 			p_avg = float(np.mean(precs_at_tiou)) if precs_at_tiou else 0.0
@@ -298,11 +380,11 @@ def aggregate_metrics(
 			metrics[f'loc_recall@{tiou * 100:.0f}']    = r_avg
 			metrics[f'loc_f1@{tiou * 100:.0f}']        = f1
 
-		# Dense captioning metrics
-		text_metrics = compute_text_metrics(preds_at_tiou, refs_at_tiou)
+		# Dense captioning metrics — same key names regardless of aggregation_mode.
+		text_metrics = _aggregate_text(per_window_pairs)
 		for mname in dense_scores:
 			if mname in text_metrics: dense_scores[mname].append(text_metrics[mname])
-			elif mname == 'soda_c' and use_soda: dense_scores[mname].append(float(np.mean(soda_f1s_at_tiou)) if soda_f1s_at_tiou else 0.0)
+			elif mname == 'soda_c' and use_soda: dense_scores[mname].append(_aggregate_soda(soda_f1s_at_tiou, soda_video_ids))
 			else: dense_scores[mname].append(0.0) # Metric not available
 			metrics[_name(f'dense_{mname}@{tiou * 100:.0f}')] = dense_scores[mname][-1]
 
@@ -338,7 +420,33 @@ def aggregate_metrics(
 		if include_segment and include_localization:
 			metrics['segment_alignment'] = float(np.mean(segment_aligns)) 	if segment_aligns else 0.0
 			metrics['segment_overlap']   = float(np.mean(segment_overlaps)) if segment_overlaps else 0.0
+   
 		if include_paragraph:
-			para_scores = compute_text_metrics(para_preds, para_refs)
+			# Paragraph metrics use the SAME aggregation_mode dispatch as dense.
+			# Empty paragraphs contribute nothing useful to corpus BLEU but keep them so
+			# window/video buckets stay aligned to window indices.
+			if aggregation_mode == 'corpus': para_scores = compute_text_metrics(para_preds, para_refs)
+			elif aggregation_mode == 'window':
+				per_bucket = []
+				for p, r in zip(para_preds, para_refs):
+					if not p and not r: continue
+					per_bucket.append(compute_text_metrics([p], [r]))
+     
+				para_scores = {}
+				for k in ('bleu4', 'bleurt', 'rougeL', 'cider', 'meteor', 'chrf'):
+					vals = [m[k] for m in per_bucket if k in m]
+					para_scores[k] = float(np.mean(vals)) if vals else 0.0
+			else: # video
+				by_vid: Dict[str, Tuple[List[str], List[str]]] = {}
+				for w_idx, (p, r) in enumerate(zip(para_preds, para_refs)):
+					vid = batch_video_ids[w_idx]
+					if vid not in by_vid: by_vid[vid] = ([], [])
+					by_vid[vid][0].append(p); by_vid[vid][1].append(r)
+     
+				per_bucket = [compute_text_metrics(pp, rr) for pp, rr in by_vid.values() if any(pp) or any(rr)]
+				para_scores = {}
+				for k in ('bleu4', 'bleurt', 'rougeL', 'cider', 'meteor', 'chrf'):
+					vals = [m[k] for m in per_bucket if k in m]
+					para_scores[k] = float(np.mean(vals)) if vals else 0.0
 			for mname, v in para_scores.items(): metrics[_name(f'para_{mname}')] = v
 	return metrics
